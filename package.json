@@ -21,9 +21,10 @@
     "preview": "npm run preview -w @stackmon/game"
   },
   "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
-    "vitest": "^2.1.8",
-    "@types/node": "^22.10.5"
+    "vitest": "^2.1.8"
   }
 }
