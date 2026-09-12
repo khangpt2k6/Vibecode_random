@@ -66,7 +66,8 @@ export class PropAtlas {
       // into each other.
       return Texture.fromSource(gl, image, { filter: 'linear', wrap: 'clamp' });
     }));
-    return new PropAtlas(pages);
+    current = new PropAtlas(pages);
+    return current;
   }
 
   has(id: string): boolean {
@@ -81,6 +82,30 @@ export class PropAtlas {
   sizeOf(id: string): { w: number; h: number } | undefined {
     const f = ATLAS[id];
     return f && { w: f.w / ATLAS_DENSITY, h: f.h / ATLAS_DENSITY };
+  }
+
+  /**
+   * Draw a prop as a UI icon: scaled to fit a box and centred in it.
+   *
+   * The world wants sprites placed by the ground they stand on, which is
+   * what `draw` does. An icon in a panel wants the opposite - the picture
+   * centred in its slot, with the anchor irrelevant - so this converts
+   * between the two rather than making every caller do the arithmetic.
+   */
+  drawIcon(
+    quads: QuadBatch, id: string, cx: number, cy: number, box: number,
+    opts: DrawPropOptions = {},
+  ): void {
+    const f = ATLAS[id];
+    if (!f) return;
+    const nat = { w: f.w / ATLAS_DENSITY, h: f.h / ATLAS_DENSITY };
+    const k = (box / Math.max(nat.w, nat.h)) * (opts.scale ?? 1);
+    this.draw(
+      quads, id,
+      cx - (nat.w * k) / 2 + (f.ax / ATLAS_DENSITY) * k,
+      cy - (nat.h * k) / 2 + (f.ay / ATLAS_DENSITY) * k,
+      { ...opts, scale: k },
+    );
   }
 
   /**
@@ -108,7 +133,25 @@ export class PropAtlas {
 
   dispose(): void {
     for (const page of this.pages) page.dispose();
+    if (current === this) current = null;
   }
+}
+
+/**
+ * The one loaded atlas, reachable without being handed down.
+ *
+ * The HUD wants these sprites as icons, and the HUD is drawn by functions
+ * that take a UIContext assembled somewhere else entirely. Threading the
+ * atlas through every panel signature to reach two of them is worse than
+ * admitting what is already true: there is exactly one atlas per process,
+ * it is loaded once at boot, and everything drawing from it wants the same
+ * one. Returns null before it has loaded, and callers are expected to cope -
+ * the first frames of a session genuinely have no atlas.
+ */
+let current: PropAtlas | null = null;
+
+export function propAtlas(): PropAtlas | null {
+  return current;
 }
 
 /**

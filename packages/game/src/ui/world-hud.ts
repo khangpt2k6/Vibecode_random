@@ -4,6 +4,7 @@ import {
   CROPS,
   RESOURCES,
   getBuilding,
+  getCreature,
   unlockedCrops,
   type ResourceId,
 } from '@stackmon/content';
@@ -15,10 +16,14 @@ import {
   objectivePosition,
   OBJECTIVES,
   rushCost,
+  findOwned,
+  xpToNext,
+  type OwnedCreature,
   type PlayerState,
 } from '@stackmon/core';
 import { PALETTE, shade, type TypeId } from '../art/palette.js';
 import { drawIconBadge } from '../art/icons.js';
+import { propAtlas } from '../art/atlas.js';
 import { button, hovered, panel, paragraph, tag, tagRight, type Rect, type UIContext } from './widgets.js';
 
 /**
@@ -44,32 +49,140 @@ const RESOURCE_COLORS: Record<ResourceId, number> = {
 };
 
 export interface HudResult {
+  openQuests: boolean;
   openBuild: boolean;
   openCodex: boolean;
   openHelp: boolean;
 }
 
-/** The resource strip along the top right. */
-export function drawResourceBar(ui: UIContext, p: PlayerState, width: number): void {
-  const cell = 104;
-  const w = cell * RESOURCE_ORDER.length + 18;
-  const x = width - w - 14;
-  panel(ui, { x, y: 11, w, h: 46 }, undefined, 0.96, 12);
+/**
+ * A picture for each currency, taken from the baked prop atlas.
+ *
+ * A coloured bar next to a number tells you nothing until you have read the
+ * label under it, which means the bar is decoration and the label is the
+ * interface. An object you recognise does the job on its own: a generator is
+ * compute, an aerial is bandwidth, a crate is storage. Same art as the
+ * island, so the HUD looks like it belongs to the world rather than sitting
+ * on top of it.
+ */
+const RESOURCE_ICONS: Record<ResourceId, string> = {
+  scrap: 'survival/resource-stone#0',
+  compute: 'space/machine_generatorLarge#0',
+  memory: 'space/machine_barrel#0',
+  bandwidth: 'space/machine_wireless#0',
+  storage: 'survival/chest#0',
+};
 
+/**
+ * A picture for each crop.
+ *
+ * These are not plants. They are CPU cycles, memory, bandwidth, storage and
+ * telemetry, and drawing compute as a carrot would undercut the only joke
+ * the game is making. So each one is the machine that would actually produce
+ * it: a generator, a tank, an aerial, a crate, a dish.
+ */
+const CROP_ICONS: Record<string, string> = {
+  'cpu-cycles': 'space/machine_generatorLarge#0',
+  'ram-bank': 'space/machine_barrel#0',
+  'fibre-line': 'space/machine_wireless#0',
+  'disk-array': 'survival/chest#0',
+  'log-stream': 'space/satelliteDish_detailed#0',
+};
+
+/** Numbers get long. 12400 reads worse than 12.4k in a 96 pixel pill. */
+function compact(n: number): string {
+  const v = Math.floor(n);
+  if (v < 10_000) return String(v);
+  if (v < 1_000_000) return `${(v / 1000).toFixed(v < 100_000 ? 1 : 0)}k`;
+  return `${(v / 1_000_000).toFixed(1)}m`;
+}
+
+/**
+ * The currency bar, and the party leader's level beside it.
+ *
+ * Drawn in two sweeps rather than one pass per pill: every pill body is a
+ * shape and every icon and number is a quad, and the two batches flush each
+ * other whenever they alternate. Five pills interleaved would be ten draw
+ * calls for a strip of interface.
+ */
+export function drawResourceBar(ui: UIContext, p: PlayerState, width: number): void {
+  const atlas = propAtlas();
+  const pill = 104;
+  const gap = 6;
+  const badge = 54;
+  const barH = 48;
+  const w = badge + 10 + RESOURCE_ORDER.length * (pill + gap) - gap + 20;
+  const x = width - w - 14;
+  const y = 11;
+
+  panel(ui, { x, y, w, h: barH }, undefined, 0.96, 12);
+
+  // --- shapes: the pill bodies, then the level badge ---
+  const pillX = (i: number): number => x + 14 + badge + 10 + i * (pill + gap);
   for (let i = 0; i < RESOURCE_ORDER.length; i++) {
     const id = RESOURCE_ORDER[i]!;
-    const cx = x + 12 + i * cell;
-    const color = RESOURCE_COLORS[id];
-    ui.shapes.roundedRect(cx, 22, 8, 24, 4, color, 1, 0);
-    drawText(ui.quads, ui.font, String(Math.floor(p.resources[id] ?? 0)), cx + 16, 18, {
-      color: PALETTE.ink,
+    const px = pillX(i);
+    ui.shapes.slantRect(px, y + 7, pill, barH - 14, 5, 8, PALETTE.glass02, 0.85, 0);
+    // No colour stripe. The icon is the identification; a coloured bar beside
+    // it is a second, worse one, and five of them across the top of the
+    // screen is a paint chart.
+    ui.shapes.circle(px + 25, y + barH / 2 - 1, 17, PALETTE.glassInk, 0.07, 0, 20);
+  }
+
+  const lead = leadCreature(p);
+  const bx = x + 14 + badge / 2;
+  const by = y + barH / 2;
+  if (lead) {
+    const r = badge / 2 - 3;
+    const need = xpToNext(lead.level);
+    const progress = need > 0 ? Math.min(1, lead.xp / need) : 1;
+    // Track first, then the filled sweep, starting at twelve o'clock.
+    ui.shapes.ring(bx, by, r + 4, 3.5, PALETTE.glass02, 0.9, 0, 30);
+    ui.shapes.ring(bx, by, r + 4, 3.5, PALETTE.good, 1, 0.55, 30, -Math.PI / 2, Math.PI * 2 * progress);
+    drawIconBadge(ui.shapes, lead.specId, bx, by, r - 3, typeOfOwned(lead));
+  }
+
+  // --- quads: icons and numbers on top of the shapes drawn above ---
+  for (let i = 0; i < RESOURCE_ORDER.length; i++) {
+    const id = RESOURCE_ORDER[i]!;
+    const px = pillX(i);
+    atlas?.drawIcon(ui.quads, RESOURCE_ICONS[id], px + 25, y + barH / 2 - 2, 40);
+    drawText(ui.quads, ui.font, compact(p.resources[id] ?? 0), px + 48, y + 8, {
+      color: PALETTE.glassInk,
     });
-    drawText(ui.quads, ui.fontSmall, RESOURCES[id].label, cx + 16, 37, {
-      color: PALETTE.inkSoft,
-      scale: 0.88,
-      letterSpacing: 1,
+    // 0.66 and almost no tracking, because STORAGE and BANDWIDTH have to fit
+    // the same 52 pixels as SCRAP does.
+    drawText(ui.quads, ui.fontSmall, RESOURCES[id].label, px + 49, y + 28, {
+      color: PALETTE.glassInkDim,
+      scale: 0.66,
+      letterSpacing: 0.3,
     });
   }
+
+  if (lead) {
+    // Sits on the ring rather than inside the badge, which the mark owns.
+    const label = `LV ${lead.level}`;
+    ui.shapes.slantRect(bx - 21, by + badge / 2 - 9, 42, 15, 3, 4, PALETTE.glass02, 0.96, 0);
+    drawText(ui.quads, ui.fontSmall, label, bx - 15, by + badge / 2 - 7, {
+      color: PALETTE.glassInk,
+      scale: 0.86,
+      letterSpacing: 0.6,
+    });
+  }
+}
+
+/** The creature in the ingest slot, or the first one owned. */
+function leadCreature(p: PlayerState): OwnedCreature | undefined {
+  for (const uid of p.party) {
+    if (!uid) continue;
+    const c = findOwned(p, uid);
+    if (c) return c;
+  }
+  return p.roster[0];
+}
+
+function typeOfOwned(c: OwnedCreature): TypeId {
+  return getCreature(c.specId).type;
 }
 
 /**
@@ -85,43 +198,42 @@ export function drawObjective(ui: UIContext, p: PlayerState, now: number, y: num
   const x = 14;
 
   if (!o) {
-    panel(ui, { x, y, w, h: 62 }, PALETTE.good);
-    drawText(ui.quads, ui.font, 'ALL OBJECTIVES CLEAR', x + 20, y + 16, {
-      color: PALETTE.ink,
+    panel(ui, { x, y, w, h: 62 }, undefined);
+    drawText(ui.quads, ui.font, 'ALL MISSIONS CLEAR', x + 24, y + 16, {
+      color: PALETTE.glassInk,
       letterSpacing: 1.4,
     });
-    drawText(ui.quads, ui.fontSmall, 'Keep building. Higher tiers are waiting.', x + 20, y + 38, {
-      color: PALETTE.inkSoft,
+    drawText(ui.quads, ui.fontSmall, 'Keep building. Higher tiers are waiting.', x + 24, y + 38, {
+      color: PALETTE.glassInkDim,
     });
     return 62;
   }
 
-  const whyLines = ui.fontSmall.wrap(o.why, w - 40);
-  const howLines = ui.fontSmall.wrap(o.how, w - 40);
+  const whyLines = ui.fontSmall.wrap(o.why, w - 48);
+  const howLines = ui.fontSmall.wrap(o.how, w - 48);
   const h = 78 + (whyLines.length + howLines.length) * ui.fontSmall.lineHeight;
 
-  panel(ui, { x, y, w, h }, PALETTE.warn);
-  drawText(ui.quads, ui.fontSmall, `NEXT  -  ${objectivePosition(p, now)} / ${OBJECTIVES.length}`, x + 20, y + 14, {
-    color: PALETTE.inkSoft,
+  panel(ui, { x, y, w, h }, undefined);
+  drawText(ui.quads, ui.fontSmall, `MISSION ${objectivePosition(p, now)} / ${OBJECTIVES.length}`, x + 24, y + 14, {
+    color: PALETTE.glassInkDim,
     letterSpacing: 1.6,
   });
-  drawText(ui.quads, ui.font, o.title, x + 20, y + 32, { color: PALETTE.ink, letterSpacing: 0.8 });
+  drawText(ui.quads, ui.font, o.title, x + 24, y + 32, { color: PALETTE.glassInk, letterSpacing: 0.8 });
 
   let ly = y + 56;
   for (const line of whyLines) {
-    drawText(ui.quads, ui.fontSmall, line, x + 20, ly, { color: PALETTE.inkSoft });
+    drawText(ui.quads, ui.fontSmall, line, x + 24, ly, { color: PALETTE.glassInkDim });
     ly += ui.fontSmall.lineHeight;
   }
   ly += 4;
   for (const line of howLines) {
-    drawText(ui.quads, ui.fontSmall, line, x + 20, ly, { color: PALETTE.info });
+    drawText(ui.quads, ui.fontSmall, line, x + 24, ly, { color: PALETTE.info });
     ly += ui.fontSmall.lineHeight;
   }
 
   const prog = o.progress?.(p, now);
   if (prog !== undefined) {
-    ui.shapes.roundedRect(x + 20, y + h - 14, w - 40, 5, 3, PALETTE.uiShadow, 0.2, 0);
-    ui.shapes.roundedRect(x + 20, y + h - 14, (w - 40) * Math.max(0.02, prog), 5, 3, PALETTE.warn, 1, 0);
+    ui.shapes.capsule(x + 24, y + h - 15, w - 48, 6, Math.max(0.02, prog), PALETTE.warn, PALETTE.uiShadow, 0.5);
   }
   return h;
 }
@@ -132,26 +244,39 @@ export function drawNudges(ui: UIContext, p: PlayerState, now: number, y: number
   let ly = y;
   for (const n of list) {
     const color = n.tone === 'good' ? PALETTE.good : n.tone === 'warn' ? PALETTE.warn : PALETTE.info;
-    const w = ui.fontSmall.measure(n.text) + 40;
-    ui.shapes.roundedRect(14, ly, w, 24, 12, PALETTE.uiPanel, 0.94, 0);
-    ui.shapes.circle(30, ly + 12, 5, color, 1, 0, 10);
-    drawText(ui.quads, ui.fontSmall, n.text, 42, ly + 5, { color: PALETTE.ink });
+    const w = ui.fontSmall.measure(n.text) + 46;
+    ui.shapes.slantRect(14, ly, w, 25, 6, 6, PALETTE.glass02, 0.88, 0);
+    ui.shapes.circle(34, ly + 12, 5, color, 1, 0.5, 10);
+    drawText(ui.quads, ui.fontSmall, n.text, 46, ly + 5, { color: PALETTE.glassInk });
     ly += 28;
   }
   return ly - y;
 }
 
-/** The bottom-left button row. Returns which overlay to open. */
-export function drawToolbar(ui: UIContext, height: number): HudResult {
+/**
+ * The bottom-left button row.
+ *
+ * MISSIONS sits first and carries its own count, because "where do I earn
+ * experience" is the question a new player actually has and a button that
+ * answers it should not be third in a row of equals.
+ */
+export function drawToolbar(
+  ui: UIContext, height: number, quests: { questsDone: number; questsTotal: number },
+): HudResult {
   const y = height - 56;
-  const result: HudResult = { openBuild: false, openCodex: false, openHelp: false };
-  if (button(ui, { x: 14, y, w: 116, h: 40 }, 'BUILD  (B)', { color: PALETTE.typeInfra, small: true })) {
+  const result: HudResult = { openQuests: false, openBuild: false, openCodex: false, openHelp: false };
+  const label = `MISSIONS  ${quests.questsDone}/${quests.questsTotal}`;
+
+  if (button(ui, { x: 14, y, w: 168, h: 40 }, label, { color: PALETTE.warn, small: true })) {
+    result.openQuests = true;
+  }
+  if (button(ui, { x: 190, y, w: 116, h: 40 }, 'BUILD  (B)', { color: PALETTE.typeInfra, small: true })) {
     result.openBuild = true;
   }
-  if (button(ui, { x: 138, y, w: 116, h: 40 }, 'CODEX  (G)', { color: PALETTE.typeIntel, small: true })) {
+  if (button(ui, { x: 314, y, w: 116, h: 40 }, 'CODEX  (G)', { color: PALETTE.typeIntel, small: true })) {
     result.openCodex = true;
   }
-  if (button(ui, { x: 262, y, w: 100, h: 40 }, 'HELP  (H)', { color: PALETTE.inkSoft, small: true })) {
+  if (button(ui, { x: 438, y, w: 100, h: 40 }, 'HELP  (H)', { color: PALETTE.info, small: true })) {
     result.openHelp = true;
   }
   return result;
@@ -185,7 +310,7 @@ export function drawBuildMenu(
   const h = height - 32;
   const x = (width - w) / 2;
   const y = 16;
-  panel(ui, { x, y, w, h }, PALETTE.typeInfra, 0.985, 16);
+  panel(ui, { x, y, w, h }, undefined, 0.985, 16);
 
   drawText(ui.quads, ui.fontBig ?? ui.font, 'BUILD', x + 26, y + 18, {
     color: PALETTE.ink,
@@ -289,20 +414,23 @@ export function drawPlantMenu(
   ui: UIContext, p: PlayerState, width: number, height: number,
 ): PlantMenuResult {
   const result: PlantMenuResult = { close: false, crop: null };
+  const atlas = propAtlas();
   ui.shapes.rect(0, 0, width, height, PALETTE.uiShadow, 0.45, 0);
 
   const unlocked = unlockedCrops(p.base.built);
   const list = CROPS.filter((c) => unlocked.includes(c.id));
   const cardW = 188;
-  const cardH = 132;
+  const cardH = 206;
+  /** Height of the picture well at the top of each card. */
+  const artH = 78;
   const w = list.length * (cardW + 10) + 26;
   const x = Math.max(16, (width - w) / 2);
   const y = height / 2 - cardH / 2 - 20;
 
-  panel(ui, { x, y: y - 52, w, h: cardH + 92 }, PALETTE.good, 0.985, 14);
-  drawText(ui.quads, ui.font, 'PLANT', x + 20, y - 42, { color: PALETTE.ink, letterSpacing: 2.5 });
+  panel(ui, { x, y: y - 52, w, h: cardH + 92 }, undefined, 0.985, 14);
+  drawText(ui.quads, ui.font, 'PLANT', x + 20, y - 42, { color: PALETTE.glassInk, letterSpacing: 2.5 });
   drawText(ui.quads, ui.fontSmall, 'Crops keep growing while the tab is closed.', x + 96, y - 36, {
-    color: PALETTE.inkSoft,
+    color: PALETTE.glassInkDim,
   });
   if (button(ui, { x: x + w - 104, y: y - 46, w: 88, h: 30 }, 'CANCEL', { color: PALETTE.inkSoft, small: true })) {
     result.close = true;
@@ -315,20 +443,34 @@ export function drawPlantMenu(
     const afford = p.resources.scrap >= cost;
     const over = hovered(ui, rect);
 
-    ui.shapes.roundedRect(rect.x, rect.y + 2, rect.w, rect.h, 10, PALETTE.uiShadow, 0.16, 0);
-    ui.shapes.roundedRect(rect.x, rect.y, rect.w, rect.h, 10, afford ? PALETTE.uiPanel : PALETTE.wallShade, 1, 0);
-    ui.shapes.roundedRect(rect.x, rect.y, rect.w, 6, 3, crop.tint, 1, 0);
-    if (over && afford) ui.shapes.roundedRect(rect.x, rect.y, rect.w, rect.h, 10, crop.tint, 0.12, 0);
+    ui.shapes.roundedRect(rect.x, rect.y + 3, rect.w, rect.h, 12, PALETTE.uiShadow, 0.22, 0);
+    ui.shapes.roundedRect(rect.x, rect.y, rect.w, rect.h, 12, afford ? PALETTE.uiPanel : PALETTE.wallShade, 1, 0);
 
-    drawText(ui.quads, ui.font, crop.name, rect.x + 14, rect.y + 14, { color: PALETTE.ink, letterSpacing: 0.8 });
+    // The picture well: the crop's own colour, washed out, so five cards read
+    // as five different things before a single word has been read.
+    ui.shapes.roundedRect(rect.x + 8, rect.y + 8, rect.w - 16, artH, 10, shade(crop.tint, 0.62), 1, 0);
+    ui.shapes.roundedRect(rect.x + 8, rect.y + 8 + artH - 16, rect.w - 16, 16, 10, shade(crop.tint, 0.44), 1, 0);
+    if (over && afford) ui.shapes.roundedRect(rect.x, rect.y, rect.w, rect.h, 12, crop.tint, 0.14, 0);
+
+    const art = CROP_ICONS[crop.id];
+    if (art) {
+      // Shadow under it, so the object sits in the well instead of floating.
+      ui.shapes.ellipse(rect.x + rect.w / 2, rect.y + artH - 6, 30, 8, PALETTE.uiShadow, 0.16, 0, 18);
+      atlas?.drawIcon(ui.quads, art, rect.x + rect.w / 2, rect.y + 8 + artH / 2 - 4, artH - 6);
+    }
+
+    let ty = rect.y + artH + 18;
+    drawText(ui.quads, ui.font, crop.name, rect.x + 14, ty, { color: PALETTE.ink, letterSpacing: 0.8 });
+    ty += 24;
     let tx = rect.x + 14;
     for (const [k, v] of Object.entries(crop.yield) as Array<[ResourceId, number]>) {
-      tx += tag(ui, tx, rect.y + 36, `+${v} ${RESOURCES[k].label}`, RESOURCE_COLORS[k]) + 5;
+      tx += tag(ui, tx, ty, `+${v} ${RESOURCES[k].label}`, RESOURCE_COLORS[k]) + 5;
     }
-    drawText(ui.quads, ui.fontSmall, `${crop.growSeconds}s  -  ${cost} scrap`, rect.x + 14, rect.y + 58, {
+    ty += 24;
+    drawText(ui.quads, ui.fontSmall, `${crop.growSeconds}s  -  ${cost} scrap`, rect.x + 14, ty, {
       color: afford ? PALETTE.inkSoft : PALETTE.danger,
     });
-    paragraph(ui, rect.x + 14, rect.y + 78, rect.w - 28, crop.description, PALETTE.inkSoft, 0.88);
+    paragraph(ui, rect.x + 14, ty + 20, rect.w - 28, crop.description, PALETTE.inkSoft, 0.88);
 
     if (over && afford && ui.input.clicked) result.crop = crop.id;
   }
@@ -344,7 +486,7 @@ export function drawHelp(ui: UIContext, width: number, height: number): boolean 
   const h = Math.min(560, height - 60);
   const x = (width - w) / 2;
   const y = (height - h) / 2;
-  panel(ui, { x, y, w, h }, PALETTE.info, 0.985, 16);
+  panel(ui, { x, y, w, h }, undefined, 0.985, 16);
 
   drawText(ui.quads, ui.fontBig ?? ui.font, 'HOW THIS GAME WORKS', x + 28, y + 20, {
     color: PALETTE.ink,
