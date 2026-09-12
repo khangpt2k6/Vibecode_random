@@ -58,15 +58,16 @@ export class GameAudio {
     const saved = readSettings();
     this.bus = new AudioBus({
       master: saved.master ?? 0.7,
-      music: saved.music ?? 0.4,
+      music: saved.music ?? 0.55,
       sfx: saved.sfx ?? 0.75,
     });
     if (saved.muted) this.bus.setMuted(true);
 
     this.sfx = new Sfx(this.bus);
-    // Sparse on purpose. This plays under a game people leave open, so the
-    // brief was music to think over rather than music to listen to.
-    this.ambience = new Ambience(this.bus, { birdEvery: 10, noteEvery: 5 });
+    // Slow, because this plays under a game people leave open for an hour.
+    // Fast enough to read as music though: the first version had no pulse at
+    // all and the ear filed it under weather.
+    this.ambience = new Ambience(this.bus, { birdEvery: 11, bpm: 68 });
   }
 
   /**
