@@ -31,6 +31,15 @@ import {
   drawWaterTile,
   type PropAnchor,
 } from '../art/nature.js';
+import {
+  PropAtlas,
+  groupExcluding,
+  groupMatching,
+  pickFrom,
+  propPool,
+  ATLAS_GROUPS,
+} from '../art/atlas.js';
+import { footprint } from '../art/solids.js';
 import { drawBuilding, drawMainHall, type BuildingStyle } from '../art/buildings.js';
 import { drawCrop, drawEmptyPlot, drawPlotBase, drawScaffold } from '../art/farm.js';
 import { drawIconBadge } from '../art/icons.js';
@@ -98,11 +107,47 @@ interface Tile {
 
 type PropKind = 'tree' | 'pine' | 'bush' | 'rock' | 'flowers' | 'tuft';
 
+/**
+ * Which slice of the baked atlas each kind of scatter draws from.
+ *
+ * The baker files every conifer under "tree" because it sorts by what the
+ * model is, not by how the island uses it. The island wants pines on the
+ * ridges and broadleaf in the meadow, so the two are split back apart here.
+ * Rocks and stones are two groups in the atlas - same shapes, two colour
+ * families - and the island is happy with either.
+ */
+const PROP_POOLS: Record<PropKind, () => readonly string[]> = {
+  tree: () => groupExcluding('tree', 'pine'),
+  pine: () => groupMatching('tree', 'pine'),
+  bush: () => ATLAS_GROUPS.bush ?? [],
+  rock: () => [...(ATLAS_GROUPS.rock ?? []), ...(ATLAS_GROUPS.stone ?? [])],
+  flowers: () => ATLAS_GROUPS.flower ?? [],
+  tuft: () => ATLAS_GROUPS.grass ?? [],
+};
+
+/**
+ * Choose this prop's sprite from its tile, once, at generation time.
+ *
+ * Seeded from the coordinates rather than drawn from the scatter Rng so that
+ * adding a prop kind later does not reshuffle every tree already on the map.
+ */
+function spriteFor(kind: PropKind, gx: number, gy: number, index: number): string | undefined {
+  const pool = propPool(kind, PROP_POOLS[kind]);
+  return pickFrom(pool, Math.imul(gx, 73856093) ^ Math.imul(gy, 19349663) ^ Math.imul(index, 83492791));
+}
+
 interface Prop {
   kind: PropKind;
   anchor: PropAnchor;
   /** Sort key, so props interleave correctly with terrain and buildings. */
   depth: number;
+  /**
+   * Baked sprite for this prop, chosen at scatter time so it survives a
+   * reload. Undefined only while the atlas is still downloading, and for the
+   * handful of kinds it has no models for - drawProp falls back to the
+   * hand-drawn version either way.
+   */
+  sprite?: string;
 }
 
 interface Structure {
@@ -181,6 +226,8 @@ export class WorldScene implements Scene {
 
   private font!: Font;
   private fontSmall!: Font;
+  /** Baked scenery. Null until the atlas finishes loading, or if it failed. */
+  private atlas: PropAtlas | null = null;
   private particles!: ParticleSystem;
   private readonly rng = new Rng('stackmon-island-v2');
   private captureRng!: Rng;
@@ -199,6 +246,15 @@ export class WorldScene implements Scene {
   private pendingLabels: Array<{ x: number; y: number; text: string; type: TypeId }> = [];
 
   enter(ctx: SceneContext): void {
+    // Deliberately not awaited. SceneManager does await enter(), but it puts
+    // the scene on the stack first and render() has no guard for a scene that
+    // has not finished entering, so blocking here would draw a half-built
+    // world for a frame. Every prop has a hand-drawn fallback, so the worst
+    // case of a slow or failed atlas is the island the game shipped with.
+    void PropAtlas.load(ctx.renderer.gl)
+      .then((atlas) => { this.atlas = atlas; })
+      .catch((err: unknown) => { console.warn('prop atlas unavailable, using drawn scenery', err); });
+
     this.font = new Font(ctx.renderer.gl, { size: 17, weight: 700 });
     this.fontSmall = new Font(ctx.renderer.gl, { size: 11, weight: 600 });
     this.particles = new ParticleSystem(this.rng.fork('particles'));
@@ -614,8 +670,10 @@ export class WorldScene implements Scene {
         for (let i = 0; i < count; i++) {
           const jx = rng.range(-0.33, 0.33);
           const jy = rng.range(-0.33, 0.33);
+          const kind = this.propKindFor(t, forest, rng);
           this.props.push({
-            kind: this.propKindFor(t, forest, rng),
+            kind,
+            sprite: spriteFor(kind, gx, gy, i),
             anchor: anchorAt(
               { gx: gx + jx, gy: gy + jy, h: t.height },
               rng.range(0, Math.PI * 2),
@@ -706,12 +764,18 @@ export class WorldScene implements Scene {
     const hallHeight = this.heightAt(hx, hy);
     this.plotTiles = [];
 
-    for (let ring = 2; ring <= 9 && this.plotTiles.length < 40; ring++) {
+    const hallSum = hx + hy;
+    for (let ring = 2; ring <= 10 && this.plotTiles.length < 40; ring++) {
       for (let dx = -ring; dx <= ring && this.plotTiles.length < 40; dx++) {
         for (let dy = -ring; dy <= ring; dy++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
           const gx = hx + dx;
           const gy = hy + dy;
+          // Only tiles on the hall's diagonal or in front of it. Painter order
+          // draws smaller (gx + gy) first, so a plot behind the Ops Centre is
+          // drawn and then immediately covered by its roof - the plots were
+          // rendering perfectly and were simply underneath a building.
+          if (gx + gy < hallSum) continue;
           const t = this.tiles[gy * MAP_SIZE + gx];
           if (!t || t.terrain === 'water' || t.terrain === 'rock' || t.path) continue;
           if (t.height !== hallHeight) continue;
@@ -721,6 +785,12 @@ export class WorldScene implements Scene {
         }
       }
     }
+    // Nearest first, so the first few plots a player is given cluster right
+    // by the Ops Centre instead of being scattered around the ring.
+    this.plotTiles.sort(
+      (a, b) =>
+        Math.abs(a.gx - hx) + Math.abs(a.gy - hy) - (Math.abs(b.gx - hx) + Math.abs(b.gy - hy)),
+    );
 
     // Plots are not scatter, so nothing decorative may stand on one.
     const taken = new Set(this.plotTiles.map((t) => `${t.gx},${t.gy}`));
@@ -947,7 +1017,7 @@ export class WorldScene implements Scene {
    * and both look broken.
    */
   private renderWorld(ctx: SceneContext): void {
-    const { shapes, camera } = ctx.renderer;
+    const { shapes, quads, camera } = ctx.renderer;
     const pad = DEFAULT_ISO.tileW * 2 + MAX_HEIGHT * DEFAULT_ISO.elevation + 80;
     const view = camera.visibleBounds(pad);
 
@@ -999,9 +1069,23 @@ export class WorldScene implements Scene {
         this.drawConstruction(shapes);
       }
 
-      while (propIndex < this.props.length && this.props[propIndex]!.depth < sum + 1) {
-        this.drawProp(shapes, this.props[propIndex]!);
-        propIndex++;
+      // Props go in two passes over the same range rather than one. Shadows
+      // are shapes and baked scenery is quads, and the two batches flush each
+      // other on every alternation - interleaving them per prop would cost a
+      // draw call per tree.
+      const propStart = propIndex;
+      while (propIndex < this.props.length && this.props[propIndex]!.depth < sum + 1) propIndex++;
+      if (this.atlas) {
+        for (let i = propStart; i < propIndex; i++) {
+          const prop = this.props[i]!;
+          const size = prop.sprite && this.atlas.sizeOf(prop.sprite);
+          if (size) {
+            footprint(shapes, prop.anchor.x, prop.anchor.y, size.w * prop.anchor.scale * 0.34, 0.26);
+          }
+        }
+      }
+      for (let i = propStart; i < propIndex; i++) {
+        this.drawProp(shapes, quads, this.props[i]!);
       }
       while (wildIndex < wildSorted.length && wildSorted[wildIndex]!.gx + wildSorted[wildIndex]!.gy < sum + 1) {
         this.drawWild(ctx, wildSorted[wildIndex]!);
@@ -1112,7 +1196,17 @@ export class WorldScene implements Scene {
     );
   }
 
-  private drawProp(shapes: SceneContext['renderer']['shapes'], prop: Prop): void {
+  private drawProp(
+    shapes: SceneContext['renderer']['shapes'],
+    quads: SceneContext['renderer']['quads'],
+    prop: Prop,
+  ): void {
+    if (this.atlas && prop.sprite) {
+      this.atlas.draw(quads, prop.sprite, prop.anchor.x, prop.anchor.y, {
+        scale: prop.anchor.scale,
+      });
+      return;
+    }
     switch (prop.kind) {
       case 'tree':
         drawTree(shapes, prop.anchor);
