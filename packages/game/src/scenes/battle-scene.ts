@@ -28,7 +28,7 @@ import {
   type UIContext,
 } from '../ui/widgets.js';
 import { GLYPHS } from '../ui/glyphs.js';
-import { playSfx } from '../audio/game-audio.js';
+import { gameAudio, playSfx } from '../audio/game-audio.js';
 
 /**
  * The battle screen.
@@ -157,12 +157,19 @@ export class BattleScene implements Scene {
     // Pick the first living creature so the skill panel is never empty.
     this.selectedSlot = this.battle.state.pipeline.findIndex((p) => p.occupant && !p.occupant.downed);
     if (this.selectedSlot < 0) this.selectedSlot = 0;
+
+    // Duck the island music under the fight. The soundtrack is written to sit
+    // behind idle pottering; at full level it competes with the log and the
+    // hits, which are the two things a player is actually listening for here.
+    // The nature layer stays up, because the fight happens on the island.
+    gameAudio()?.ambience.setMusicLevel(0.34);
   }
 
   exit(): void {
     this.font.dispose();
     this.fontSmall.dispose();
     this.fontBig.dispose();
+    gameAudio()?.ambience.setMusicLevel(1);
     this.onFinish?.(this.battle);
   }
 
@@ -246,6 +253,7 @@ export class BattleScene implements Scene {
             this.hitFlash.set(entry.actorUid, 0.35);
             this.float(PLATFORM_X[slot]!, PLATFORM_Y - 90, `-${entry.amount ?? ''}`, PALETTE.danger, 1.2);
             this.shakeTimer = 0.25;
+            playSfx('deny', 0.55);
           }
         } else {
           // The incident was hit.
@@ -258,6 +266,7 @@ export class BattleScene implements Scene {
             strong ? PALETTE.flowerYellow : PALETTE.uiPanel,
             strong ? 1.6 : 1.25,
           );
+          playSfx('confirm', strong ? 0.8 : 0.5);
         }
         delay = 0.42;
         break;
@@ -266,6 +275,7 @@ export class BattleScene implements Scene {
         const slot = s.pipeline.findIndex((p) => p.occupant?.uid === entry.actorUid);
         const x = slot >= 0 ? PLATFORM_X[slot]! : 0;
         this.float(x, PLATFORM_Y - 90, `+${entry.amount ?? ''}`, PALETTE.good, 1.2);
+        playSfx('reward', 0.5);
         break;
       }
       case 'flow': {
@@ -288,11 +298,15 @@ export class BattleScene implements Scene {
           this.packets.push({ t: this.rng.range(0.1, 0.8), speed: 0.4, lane: this.rng.range(-1, 1), dropped: true });
         }
         this.shakeTimer = 0.18;
+        // Dropped ops are the failure the whole game is about, so they are
+        // the one thing in the log that always makes a noise.
+        playSfx('deny', 0.8);
         delay = 0.5;
         break;
       }
       case 'down': {
         this.shakeTimer = 0.45;
+        playSfx('deny', 1);
         delay = 0.7;
         break;
       }
@@ -305,6 +319,7 @@ export class BattleScene implements Scene {
         delay = 0.55;
         break;
       case 'skill':
+        playSfx('place', 0.55);
         delay = 0.5;
         break;
       default:
