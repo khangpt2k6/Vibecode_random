@@ -1,5 +1,6 @@
 import { App } from '@stackmon/engine';
 import { WorldScene } from './scenes/world-scene.js';
+import { loadPlayer } from './state/save.js';
 
 /**
  * Entry point.
@@ -25,7 +26,8 @@ function showCrash(err: unknown): void {
 
 try {
   const app = new App({ canvas, onError: showCrash });
-  app.start(new WorldScene());
+  const player = loadPlayer();
+  app.start(new WorldScene(player));
 
   // Hold the splash for one full frame so the first render never shows a
   // flash of empty canvas before the world exists.
@@ -34,7 +36,8 @@ try {
   });
 
   // Expose for debugging from the console and for the screenshot harness.
-  (window as unknown as { stackmon: App }).stackmon = app;
+  (window as unknown as { stackmon: App; player: typeof player }).stackmon = app;
+  (window as unknown as { player: typeof player }).player = player;
 } catch (err) {
   showCrash(err);
   throw err;

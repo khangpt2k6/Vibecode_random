@@ -34,8 +34,18 @@ import {
 import { drawBuilding, drawMainHall, type BuildingStyle } from '../art/buildings.js';
 import { drawIconBadge } from '../art/icons.js';
 import { drawCreature, drawNamePlate, type CreatureVisual } from '../art/creatures.js';
-import { BattleScene, starterSetup } from './battle-scene.js';
-import { incidentsOfTier } from '@stackmon/content';
+import { BattleScene } from './battle-scene.js';
+import { getCreature, incidentsOfTier } from '@stackmon/content';
+import {
+  applyBattle,
+  attemptCapture,
+  battleLineup,
+  captureChance,
+  captureCost,
+  owns,
+  type PlayerState,
+} from '@stackmon/core';
+import { savePlayer } from '../state/save.js';
 
 /**
  * The overworld.
@@ -102,6 +112,18 @@ interface Wild {
   phase: number;
   /** Seconds to stand still before choosing somewhere new to go. */
   restFor: number;
+  level: number;
+  /** Set when caught; the creature fades out and is removed. */
+  leaving: number;
+}
+
+/** A short message that floats up and fades. */
+interface Toast {
+  x: number;
+  y: number;
+  text: string;
+  color: number;
+  life: number;
 }
 
 const TECH_BY_TYPE: Record<TypeId, Array<[string, string]>> = {
@@ -126,16 +148,21 @@ const TECH_BY_TYPE: Record<TypeId, Array<[string, string]>> = {
 export class WorldScene implements Scene {
   readonly name = 'world';
 
+  constructor(private readonly player: PlayerState) {}
+
   private tiles: Tile[] = [];
   private props: Prop[] = [];
   private structures: Structure[] = [];
   private wild: Wild[] = [];
+  private toasts: Toast[] = [];
+  private hoverWild: Wild | null = null;
   private hallAt = { gx: 0, gy: 0 };
 
   private font!: Font;
   private fontSmall!: Font;
   private particles!: ParticleSystem;
   private readonly rng = new Rng('stackmon-island-v2');
+  private captureRng!: Rng;
   private time = 0;
 
   private hoverGx = -1;
@@ -149,6 +176,9 @@ export class WorldScene implements Scene {
     this.font = new Font(ctx.renderer.gl, { size: 17, weight: 700 });
     this.fontSmall = new Font(ctx.renderer.gl, { size: 11, weight: 600 });
     this.particles = new ParticleSystem(this.rng.fork('particles'));
+    // Seeded from the save plus how many things have happened in it, so a
+    // reload cannot re-roll a capture that already failed.
+    this.captureRng = new Rng(`${this.player.seed}-capture-${this.player.clock}`);
 
     this.generateTerrain();
     this.carvePaths();
@@ -189,16 +219,115 @@ export class WorldScene implements Scene {
 
   private battleCount = 0;
 
-  /** Clicking the hall picks a fight. Rotates through the tier-1 incidents. */
+  /**
+   * Clicking the hall picks a fight.
+   *
+   * Tier climbs with how many incidents the player has cleared, and within a
+   * tier the incidents rotate, so a player who keeps losing to one keeps
+   * meeting it - which is the point - but is not stuck with only that one.
+   */
   private startBattle(ctx: SceneContext): void {
-    const pool = incidentsOfTier(1);
+    const p = this.player;
+    const cleared = Object.values(p.incidents).filter((r) => r.won > 0).length;
+    const tier = Math.min(4, 1 + Math.floor(cleared / 2)) as 1 | 2 | 3 | 4;
+    const pool = incidentsOfTier(tier);
     const incident = pool[this.battleCount % pool.length]!;
     this.battleCount++;
+
+    const { lineup, bench } = battleLineup(p);
+    const participants = [
+      ...lineup.filter((m): m is NonNullable<typeof m> => m !== null),
+      ...bench,
+    ].map((m) => m.uid);
+
     ctx.scenes.push(
       new BattleScene({
-        setup: starterSetup(incident.id, `island-battle-${this.battleCount}`),
+        setup: { lineup, bench, incidentId: incident.id, seed: `${p.seed}-battle-${p.clock}` },
+        onFinish: (battle) => {
+          const st = battle.state;
+          if (st.outcome === 'ongoing') return;
+          const rewards = applyBattle(p, {
+            incidentId: incident.id,
+            won: st.outcome === 'victory',
+            turns: st.turn - 1,
+            opsServed: st.totalHandled,
+            opsDropped: st.totalDropped,
+            participants,
+          });
+          savePlayer(p);
+          const hall = gridToScreen({ gx: this.hallAt.gx, gy: this.hallAt.gy, h: 2 }, DEFAULT_ISO);
+          this.toast(hall.x, hall.y - 80, `+${rewards.scrap} scrap  +${rewards.xpEach} xp each`, PALETTE.flowerYellow);
+          rewards.levelUps.forEach((up, i) => {
+            const c = p.roster.find((r) => r.uid === up.uid);
+            if (c) this.toast(hall.x, hall.y - 110 - i * 18, `${getCreature(c.specId).name} reached L${up.to}`, PALETTE.good);
+          });
+        },
       }),
     );
+  }
+
+  /**
+   * Try to catch a wild creature.
+   *
+   * The offer is the base cost plus half of whatever scrap the player has
+   * spare, capped: the player is always making a real trade, and never
+   * emptying the account on one gamble.
+   */
+  private tryCapture(w: Wild): void {
+    const p = this.player;
+    const spec = getCreature(w.creatureId);
+    const cost = captureCost(spec, w.level);
+    const h = this.heightAt(Math.round(w.gx), Math.round(w.gy));
+    const pos = gridToScreen({ gx: w.gx, gy: w.gy, h }, DEFAULT_ISO);
+
+    if (p.resources.scrap < cost) {
+      this.toast(pos.x, pos.y - 60, `Need ${cost} scrap (have ${p.resources.scrap})`, PALETTE.danger);
+      return;
+    }
+
+    const spare = Math.max(0, p.resources.scrap - cost);
+    const offer = cost + Math.min(Math.round(spare * 0.5), cost * 2);
+    const result = attemptCapture(p, { specId: spec.id, level: w.level, scrapOffered: offer }, this.captureRng);
+    savePlayer(p);
+
+    if (result.success) {
+      w.leaving = 0.01;
+      this.toast(pos.x, pos.y - 60, `${spec.name} joined the roster!`, PALETTE.good);
+      this.particles.emit({
+        x: pos.x,
+        y: pos.y - 20,
+        count: 40,
+        color: PALETTE.sparkle,
+        colorEnd: TYPE_COLORS[w.type],
+        speedMin: 40,
+        speedMax: 160,
+        lifeMin: 0.5,
+        lifeMax: 1.1,
+        sizeMin: 2,
+        sizeMax: 5,
+        gravity: 60,
+        shape: 'spark',
+        emissive: 1.6,
+      });
+    } else {
+      const odds = Math.round(result.chance * 100);
+      this.toast(pos.x, pos.y - 60, `${spec.name} slipped away  (-${result.scrapSpent} scrap, ${odds}% odds)`, PALETTE.warn);
+      // It bolts for somewhere else on the island.
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const gx = this.rng.int(3, MAP_SIZE - 4);
+        const gy = this.rng.int(3, MAP_SIZE - 4);
+        if (this.walkable(gx, gy)) {
+          w.targetGx = gx;
+          w.targetGy = gy;
+          w.speed = 2.2;
+          break;
+        }
+      }
+    }
+  }
+
+  private toast(x: number, y: number, text: string, color: number): void {
+    this.toasts.push({ x, y, text, color, life: 2.6 });
   }
 
   // ------------------------------------------------------------ generation
@@ -463,6 +592,8 @@ export class WorldScene implements Scene {
           facing: rng.chance(0.5) ? -1 : 1,
           phase: rng.range(0, 20),
           restFor: rng.range(0.5, 4),
+          level: rng.int(4, 9),
+          leaving: 0,
         });
         break;
       }
@@ -557,10 +688,40 @@ export class WorldScene implements Scene {
       Math.abs(picked.gx - this.hallAt.gx) <= 1 &&
       Math.abs(picked.gy - this.hallAt.gy) <= 1;
 
+    // Wild creatures are picked by screen distance, not tile, because they
+    // stand between tiles while walking and are much smaller than one.
+    this.hoverWild = null;
+    let bestDist = 30 * Math.max(0.6, camera.zoom);
+    for (const w of this.wild) {
+      if (w.leaving > 0) continue;
+      const wh = this.heightAt(Math.round(w.gx), Math.round(w.gy));
+      const wp = camera.worldToScreen(gridToScreen({ gx: w.gx, gy: w.gy, h: wh }, DEFAULT_ISO));
+      const d = Math.hypot(
+        wp.x - input.pointer.position.x,
+        wp.y - (input.pointer.position.y + 14 * camera.zoom),
+      );
+      if (d < bestDist) {
+        bestDist = d;
+        this.hoverWild = w;
+      }
+    }
+
+    if (input.clicked && this.hoverWild) {
+      this.tryCapture(this.hoverWild);
+      return;
+    }
+
     if (input.clicked && onHall) {
       this.startBattle(ctx);
       return;
     }
+
+    for (const t of this.toasts) t.life -= dt;
+    this.toasts = this.toasts.filter((t) => t.life > 0);
+    for (const w of this.wild) {
+      if (w.leaving > 0) w.leaving += dt;
+    }
+    this.wild = this.wild.filter((w) => w.leaving < 0.8);
 
     if (input.clicked && picked) {
       const p = gridToScreen({ gx: picked.gx, gy: picked.gy, h: picked.h }, DEFAULT_ISO);
@@ -689,25 +850,31 @@ export class WorldScene implements Scene {
     const p = gridToScreen({ gx: w.gx, gy: w.gy, h: Math.max(0, h) }, DEFAULT_ISO);
 
     const moving = Math.hypot(w.targetGx - w.gx, w.targetGy - w.gy) > 0.05 ? 1 : 0;
+    const isHovered = this.hoverWild === w;
+    if (isHovered) {
+      shapes.ring(p.x, p.y, 26, 2.5, PALETTE.sparkle, 0.9, 0.8, 24);
+    }
+    // A caught creature shrinks into a point of light rather than blinking off.
+    const leave = w.leaving > 0 ? Math.max(0, 1 - w.leaving / 0.7) : 1;
     const visual: CreatureVisual = {
       creatureId: w.creatureId,
       type: w.type,
       x: p.x,
-      y: p.y,
-      scale: 0.82,
+      y: p.y - (1 - leave) * 30,
+      scale: 0.82 * leave,
       phase: w.phase,
       facing: w.facing,
       moving,
     };
-    drawCreature(shapes, visual, this.time);
+    if (leave > 0.05) drawCreature(shapes, visual, this.time);
 
     // Name plates only when the camera is close enough for them to be
     // legible - labels on everything at every zoom turns a world into a list.
     // They are queued rather than drawn here: interleaving a plate (shapes)
     // and its text (quads) per creature forced a draw call per creature, and
     // drawing all plates then all text at the end costs two.
-    if (camera.zoom > 0.85) {
-      this.pendingLabels.push({ x: p.x, y: p.y - 42, text: w.label, type: w.type });
+    if (camera.zoom > 0.85 || isHovered) {
+      this.pendingLabels.push({ x: p.x, y: p.y - 42, text: `${w.label}  L${w.level}`, type: w.type });
     }
     void quads;
   }
@@ -834,8 +1001,59 @@ export class WorldScene implements Scene {
       drawIconBadge(shapes, TECH_BY_TYPE[t][0]![0], 104 + i * 42, legendY + 25, 15, t);
     }
 
+    // Resources and roster, top right.
+    const p = this.player;
+    const resW = 300;
+    shapes.roundedRect(width - resW - 14, 14, resW, 48, 13, PALETTE.uiShadow, 0.18, 0);
+    shapes.roundedRect(width - resW - 14, 11, resW, 48, 13, PALETTE.uiPanel, 0.97, 0);
+    drawIconBadge(shapes, 'redis', width - resW + 8, 35, 13, 'cache');
+    drawText(quads, this.font, `${p.resources.scrap}`, width - resW + 30, 19, { color: PALETTE.ink });
+    drawText(quads, this.fontSmall, 'SCRAP', width - resW + 30, 40, { color: PALETTE.inkSoft, letterSpacing: 1.4 });
+    drawText(quads, this.font, `${p.roster.length}`, width - 150, 19, { color: PALETTE.ink });
+    drawText(quads, this.fontSmall, `ROSTER  -  ${p.seen.length}/24 SEEN`, width - 150, 40, {
+      color: PALETTE.inkSoft,
+      letterSpacing: 1.2,
+    });
+
+    // Toasts, projected from world space.
+    for (const t of this.toasts) {
+      const k = 1 - t.life / 2.6;
+      const sp = ctx.renderer.camera.worldToScreen({ x: t.x, y: t.y - k * 40 });
+      const w = this.fontSmall.measure(t.text) + 22;
+      const alpha = t.life < 0.5 ? t.life / 0.5 : 1;
+      shapes.roundedRect(sp.x - w / 2, sp.y - 4, w, 22, 11, PALETTE.ink, 0.9 * alpha, 0);
+      drawText(quads, this.fontSmall, t.text, sp.x, sp.y, { color: t.color, align: 'center', alpha });
+    }
+
+    // Capture prompt for the creature under the pointer.
+    if (this.hoverWild) {
+      const w = this.hoverWild;
+      const spec = getCreature(w.creatureId);
+      const cost = captureCost(spec, w.level);
+      const chance = Math.round(captureChance(spec, w.level, cost) * 100);
+      const have = owns(p, spec.id);
+      const canAfford = p.resources.scrap >= cost;
+      const line1 = `${spec.name}  L${w.level}${have ? '  (owned)' : ''}`;
+      const line2 = canAfford
+        ? `Click to capture  -  ${cost} scrap  -  ${chance}% base odds`
+        : `Need ${cost} scrap to attempt`;
+      const boxW = 440;
+      const lines3 = this.fontSmall.wrap(spec.keyInsight, boxW - 44);
+      const boxH = 62 + lines3.length * 15;
+      const x = width / 2 - boxW / 2;
+      const y = height - 90 - boxH;
+      shapes.roundedRect(x, y + 3, boxW, boxH, 13, PALETTE.uiShadow, 0.2, 0);
+      shapes.roundedRect(x, y, boxW, boxH, 13, PALETTE.uiPanel, 0.97, 0);
+      shapes.roundedRect(x, y, boxW, 6, 3, TYPE_COLORS[w.type], 1, 0);
+      drawText(quads, this.font, line1, x + 22, y + 14, { color: PALETTE.ink, letterSpacing: 1 });
+      drawText(quads, this.fontSmall, line2, x + 22, y + 36, { color: canAfford ? PALETTE.good : PALETTE.danger });
+      for (let i = 0; i < lines3.length; i++) {
+        drawText(quads, this.fontSmall, lines3[i]!, x + 22, y + 54 + i * 15, { color: PALETTE.inkSoft, scale: 0.95 });
+      }
+    }
+
     // Hover readout
-    if (this.hoverGx >= 0) {
+    if (this.hoverGx >= 0 && !this.hoverWild) {
       const tile = this.tiles[this.hoverGy * MAP_SIZE + this.hoverGx]!;
       const struct = this.structures.find((s) => s.gx === this.hoverGx && s.gy === this.hoverGy);
       const onHall =
