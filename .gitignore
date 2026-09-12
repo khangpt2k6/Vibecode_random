@@ -13,8 +13,9 @@ playwright-report/
 test-results/
 screenshots/
 
-# playwright
-e2e-results/
+# playwright (artifacts go to the system temp dir; see playwright.config.ts)
+test-results/
+playwright-report/
 
 # downloaded model kits and baker scratch - only the baked atlas is committed
 assets-src/raw/

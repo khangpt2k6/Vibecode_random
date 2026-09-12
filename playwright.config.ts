@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 /**
@@ -15,6 +17,16 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
+  /**
+   * Artifacts go to the system temp directory, not into the repo.
+   *
+   * This repo lives under OneDrive, which syncs `test-results/` out from
+   * under a trace that is still being written. The longest test - a full
+   * battle, about forty seconds - reliably lost its trace file and failed at
+   * `browserContext.close` with ENOENT, which looks exactly like a game bug
+   * and is not one.
+   */
+  outputDir: join(tmpdir(), 'stackmon-e2e'),
   // The game is stateful and shares one localStorage origin, so the specs run
   // one at a time rather than fighting over the same save.
   fullyParallel: false,
