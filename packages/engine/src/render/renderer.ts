@@ -85,10 +85,10 @@ export class Renderer {
 
     // Keep draw order equal to submission order across both batches. Either
     // one can flush mid-layer - the shape batch when it fills, the quad batch
-    // on every texture change - and whichever does must let the other catch
-    // up first, or work submitted earlier ends up painted on top.
-    this.shapes.beforeFlush = () => this.quads.flush();
-    this.quads.beforeFlush = () => this.shapes.flush();
+    // on every texture change - and whichever does must let anything older
+    // out first, or work submitted earlier ends up painted on top.
+    this.shapes.flushSiblings = () => this.quads.flush();
+    this.quads.flushSiblings = () => this.shapes.flush();
   }
 
   /** Call each frame before drawing. Returns true if the size changed. */

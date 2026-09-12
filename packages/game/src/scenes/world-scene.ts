@@ -33,6 +33,7 @@ import {
 } from '../art/nature.js';
 import { drawBuilding, drawMainHall, type BuildingStyle } from '../art/buildings.js';
 import { drawIconBadge } from '../art/icons.js';
+import { drawCreature, drawNamePlate, type CreatureVisual } from '../art/creatures.js';
 
 /**
  * The overworld.
@@ -79,6 +80,28 @@ interface Structure {
   creatureId: string;
 }
 
+/**
+ * A wild creature wandering the island.
+ *
+ * Position is kept in fractional grid coordinates rather than world pixels,
+ * so walking logic can ask "is the next tile walkable" without converting
+ * back and forth, and so depth sorting is just (gx + gy) like everything else.
+ */
+interface Wild {
+  creatureId: string;
+  label: string;
+  type: TypeId;
+  gx: number;
+  gy: number;
+  targetGx: number;
+  targetGy: number;
+  speed: number;
+  facing: -1 | 1;
+  phase: number;
+  /** Seconds to stand still before choosing somewhere new to go. */
+  restFor: number;
+}
+
 const TECH_BY_TYPE: Record<TypeId, Array<[string, string]>> = {
   data: [['postgres', 'POSTGRES'], ['mysql', 'MYSQL'], ['mongo', 'MONGO'], ['sqlite', 'SQLITE']],
   stream: [['kafka', 'KAFKA'], ['rabbitmq', 'RABBITMQ'], ['pulsar', 'PULSAR'], ['nats', 'NATS']],
@@ -104,6 +127,7 @@ export class WorldScene implements Scene {
   private tiles: Tile[] = [];
   private props: Prop[] = [];
   private structures: Structure[] = [];
+  private wild: Wild[] = [];
   private hallAt = { gx: 0, gy: 0 };
 
   private font!: Font;
@@ -124,6 +148,7 @@ export class WorldScene implements Scene {
     this.carvePaths();
     this.placeStructures();
     this.scatterProps();
+    this.spawnWild();
 
     const camera = ctx.renderer.camera;
     const centre = gridToScreen({ gx: MAP_SIZE / 2, gy: MAP_SIZE / 2, h: 1 }, DEFAULT_ISO);
@@ -163,17 +188,20 @@ export class WorldScene implements Scene {
         // so it does not read as a circle someone drew.
         const dx = (gx / MAP_SIZE - 0.5) * 2;
         const dy = (gy / MAP_SIZE - 0.5) * 2;
-        const radial = 1 - Math.min(1, Math.hypot(dx, dy) * 1.12);
+        // The exponent sharpens the coast. A linear falloff spends a third
+        // of the island's radius crossing the beach, which is why the shore
+        // read as an enormous flat sand ring rather than as a shoreline.
+        const radial = Math.pow(Math.max(0, 1 - Math.hypot(dx, dy) * 1.05), 0.55);
         const n = shapeNoise.fbm(gx * 0.075, gy * 0.075, 4);
-        const elevation = radial * 0.8 + n * 0.4 - 0.16;
+        const elevation = radial * 0.86 + n * 0.36 - 0.2;
 
         let terrain: Terrain;
         let height: number;
 
-        if (elevation < 0.05) {
+        if (elevation < 0.06) {
           terrain = 'water';
           height = 0;
-        } else if (elevation < 0.12) {
+        } else if (elevation < 0.13) {
           terrain = 'sand';
           height = 1;
         } else {
@@ -181,8 +209,10 @@ export class WorldScene implements Scene {
           // hills rather than one saturated plateau. The earlier mapping hit
           // its ceiling almost immediately and flattened the whole middle of
           // the island into a single grey slab.
-          const ridge = detail.fbm(gx * 0.13, gy * 0.13, 4);
-          const h = (elevation - 0.12) * 1.15 + ridge * 0.55;
+          // Low-frequency ridges give broad hills and valleys; the elevation
+          // term only tilts them toward the middle of the island.
+          const ridge = detail.fbm(gx * 0.062, gy * 0.062, 4);
+          const h = (elevation - 0.13) * 0.75 + (ridge - 0.34) * 1.75;
           height = 1 + Math.round(Math.max(0, Math.min(1, h)) * (MAX_HEIGHT - 1));
 
           // Rock is its own patchy feature, not simply "anywhere high".
@@ -240,12 +270,20 @@ export class WorldScene implements Scene {
     t.path = true;
   }
 
+  /**
+   * A branch from the plaza out to one structure.
+   *
+   * Runs along the central row first and only then turns, so every branch
+   * shares the same spine. Turning first instead gave each structure its own
+   * full-width road across the island, and twenty-four of those paved most of
+   * the meadow.
+   */
   private pathTo(gx: number, gy: number): void {
     const mid = Math.floor(MAP_SIZE / 2);
     const stepX = gx > mid ? 1 : -1;
-    for (let x = mid; x !== gx; x += stepX) this.markPath(x, gy);
+    for (let x = mid; x !== gx; x += stepX) this.markPath(x, mid);
     const stepY = gy > mid ? 1 : -1;
-    for (let y = mid; y !== gy; y += stepY) this.markPath(mid, y);
+    for (let y = mid; y !== gy; y += stepY) this.markPath(gx, y);
     this.markPath(gx, gy);
   }
 
@@ -365,6 +403,87 @@ export class WorldScene implements Scene {
     );
   }
 
+  /**
+   * Populate the island with wild creatures, weighted toward their habitat.
+   *
+   * They exist before any of the catching mechanics do because an empty world
+   * reads as a diorama. Something moving in the middle distance is what makes
+   * a place feel inhabited, and it costs almost nothing.
+   */
+  private spawnWild(): void {
+    const rng = this.rng.fork('wild-v1');
+    const pool: Array<[TypeId, string, string]> = [];
+    for (const type of TYPE_IDS) {
+      for (const [id, label] of TECH_BY_TYPE[type]) pool.push([type, id, label]);
+    }
+
+    for (let i = 0; i < 26; i++) {
+      for (let attempt = 0; attempt < 120; attempt++) {
+        const gx = rng.int(3, MAP_SIZE - 4);
+        const gy = rng.int(3, MAP_SIZE - 4);
+        if (!this.walkable(gx, gy)) continue;
+        const [type, creatureId, label] = rng.pick(pool);
+        this.wild.push({
+          creatureId,
+          label,
+          type,
+          gx,
+          gy,
+          targetGx: gx,
+          targetGy: gy,
+          speed: rng.range(0.35, 0.75),
+          facing: rng.chance(0.5) ? -1 : 1,
+          phase: rng.range(0, 20),
+          restFor: rng.range(0.5, 4),
+        });
+        break;
+      }
+    }
+  }
+
+  /** A tile a creature can stand on: land, and level with its neighbours. */
+  private walkable(gx: number, gy: number): boolean {
+    const t = this.tiles[gy * MAP_SIZE + gx];
+    if (!t || t.terrain === 'water') return false;
+    return !this.structures.some((s) => s.gx === gx && s.gy === gy);
+  }
+
+  private updateWild(dt: number): void {
+    const rng = this.rng;
+    for (const w of this.wild) {
+      const dx = w.targetGx - w.gx;
+      const dy = w.targetGy - w.gy;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist < 0.05) {
+        w.gx = w.targetGx;
+        w.gy = w.targetGy;
+        w.restFor -= dt;
+        if (w.restFor <= 0) {
+          // Pick an adjacent walkable tile, or stand still a bit longer if
+          // the creature has wandered into a dead end.
+          const options: Array<[number, number]> = [];
+          for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            if (this.walkable(w.gx + ox, w.gy + oy)) options.push([w.gx + ox, w.gy + oy]);
+          }
+          if (options.length > 0) {
+            const [nx, ny] = rng.pick(options);
+            w.targetGx = nx;
+            w.targetGy = ny;
+            // Isometric: moving toward +gx goes right on screen, +gy goes left.
+            w.facing = nx - w.gx - (ny - w.gy) >= 0 ? 1 : -1;
+          }
+          w.restFor = rng.range(0.6, 4.5);
+        }
+        continue;
+      }
+
+      const step = (w.speed * dt) / Math.max(dist, 1e-4);
+      w.gx += dx * Math.min(1, step);
+      w.gy += dy * Math.min(1, step);
+    }
+  }
+
   private nearStructure(gx: number, gy: number, r: number): boolean {
     return this.structures.some((s) => Math.abs(s.gx - gx) <= r && Math.abs(s.gy - gy) <= r);
   }
@@ -423,6 +542,7 @@ export class WorldScene implements Scene {
       });
     }
 
+    this.updateWild(dt);
     this.particles.update(dt);
   }
 
@@ -458,6 +578,11 @@ export class WorldScene implements Scene {
     let structIndex = 0;
     const maxSum = (MAP_SIZE - 1) * 2;
 
+    // Creatures move, so their sort order is rebuilt every frame rather than
+    // baked at spawn like the props. Twenty-six entries is nothing to sort.
+    const wildSorted = [...this.wild].sort((a, b) => a.gx + a.gy - (b.gx + b.gy));
+    let wildIndex = 0;
+
     for (let sum = 0; sum <= maxSum; sum++) {
       const startX = Math.max(0, sum - (MAP_SIZE - 1));
       const endX = Math.min(MAP_SIZE - 1, sum);
@@ -491,6 +616,10 @@ export class WorldScene implements Scene {
         this.drawProp(shapes, this.props[propIndex]!);
         propIndex++;
       }
+      while (wildIndex < wildSorted.length && wildSorted[wildIndex]!.gx + wildSorted[wildIndex]!.gy < sum + 1) {
+        this.drawWild(ctx, wildSorted[wildIndex]!);
+        wildIndex++;
+      }
       while (
         structIndex < this.structures.length &&
         this.structures[structIndex]!.gx + this.structures[structIndex]!.gy <= sum
@@ -509,6 +638,38 @@ export class WorldScene implements Scene {
           this.time,
         );
       }
+    }
+  }
+
+  private drawWild(ctx: SceneContext, w: Wild): void {
+    const { shapes, quads, camera } = ctx.renderer;
+    const h = this.heightAt(Math.round(w.gx), Math.round(w.gy));
+    const p = gridToScreen({ gx: w.gx, gy: w.gy, h: Math.max(0, h) }, DEFAULT_ISO);
+
+    const moving = Math.hypot(w.targetGx - w.gx, w.targetGy - w.gy) > 0.05 ? 1 : 0;
+    const visual: CreatureVisual = {
+      creatureId: w.creatureId,
+      type: w.type,
+      x: p.x,
+      y: p.y,
+      scale: 0.82,
+      phase: w.phase,
+      facing: w.facing,
+      moving,
+    };
+    drawCreature(shapes, visual, this.time);
+
+    // Name plate only when the camera is close enough for it to be legible.
+    // Labels on everything at every zoom is how a world turns into a list.
+    if (camera.zoom > 0.85) {
+      const width = this.fontSmall.measure(w.label);
+      drawNamePlate(shapes, p.x, p.y - 42, width, w.type);
+      drawText(quads, this.fontSmall, w.label, p.x, p.y - 41, {
+        color: PALETTE.ink,
+        align: 'center',
+        scale: 0.92,
+        letterSpacing: 0.6,
+      });
     }
   }
 

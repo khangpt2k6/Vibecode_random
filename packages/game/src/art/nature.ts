@@ -227,28 +227,36 @@ export function drawFence(b: ShapeBatch, p: GridPos, dir: 0 | 1): void {
   }
 }
 
-/** A stone path segment drawn on top of a ground tile. */
+/**
+ * A path segment drawn over a ground tile.
+ *
+ * Full tile width, not inset. An inset diamond leaves a green gap between
+ * every pair of neighbouring path tiles, which turns a road into a dotted
+ * line of unrelated tan squares - the single change from 0.86 to 1.0 here is
+ * the difference between "a path" and "scattered rubble".
+ */
 export function drawPathTile(b: ShapeBatch, p: GridPos, seed: number): void {
   const c = gridToScreen(p, DEFAULT_ISO);
   const hw = DEFAULT_ISO.tileW * 0.5;
   const hh = DEFAULT_ISO.tileH * 0.5;
 
   b.quad(
-    c.x, c.y - hh * 0.86,
-    c.x + hw * 0.86, c.y,
-    c.x, c.y + hh * 0.86,
-    c.x - hw * 0.86, c.y,
-    PALETTE.path, 1, 0,
+    c.x, c.y - hh,
+    c.x + hw, c.y,
+    c.x, c.y + hh,
+    c.x - hw, c.y,
+    mix(PALETTE.path, PALETTE.pathDeep, (Math.sin(seed) * 0.5 + 0.5) * 0.45),
+    1, 0,
   );
-  // A few paler stones scattered on it.
+  // A few paler stones, kept well inside so they never break the silhouette.
   for (let i = 0; i < 3; i++) {
     const a = seed * 2 + i * 2.3;
     b.blob(
-      c.x + Math.cos(a) * hw * 0.38,
-      c.y + Math.sin(a) * hh * 0.38,
-      4.5, 2.6, a,
+      c.x + Math.cos(a) * hw * 0.34,
+      c.y + Math.sin(a) * hh * 0.34,
+      4.2, 2.4, a,
       i % 2 === 0 ? PALETTE.sand : PALETTE.pathDeep,
-      1, 0, 8,
+      0.8, 0, 8,
     );
   }
 }

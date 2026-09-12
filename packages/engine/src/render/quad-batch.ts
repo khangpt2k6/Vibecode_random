@@ -77,18 +77,28 @@ export class QuadBatch {
   private projection = new Float32Array(9);
 
   /**
-   * Called right before this batch issues a draw, so a sibling batch can
-   * flush whatever it has pending first.
+   * Strict submission ordering across sibling batches.
    *
-   * Without this, submission order and draw order diverge: a batch that
-   * flushes mid-stream (on a texture change, or when it fills) draws ahead of
-   * a sibling that only flushes at the end of the layer. In practice that
-   * meant every UI panel was painted over the text that had been submitted
-   * before it, because the text batch flushed on its second font and the
-   * shape batch did not flush until the layer closed.
+   * `flushSiblings` is called before this batch accepts an item; the renderer
+   * wires it to drain any sibling that has work pending. That guarantees only
+   * one batch is ever accumulating, so draw order is exactly submission
+   * order, at the cost of one extra draw call per alternation.
+   *
+   * Two weaker schemes were tried first and both failed. Letting the other
+   * batch always go first simply inverts the problem - UI panels covered
+   * their labels, then labels covered their panels. Comparing "which batch
+   * started waiting first" is closer but still wrong whenever a batch is
+   * written to, then the sibling, then the first one again: the later items
+   * inherit the earlier group's position and jump the queue. Alternation is
+   * rare enough here that paying a draw call for it is the right trade.
    */
-  beforeFlush: (() => void) | null = null;
+  flushSiblings: (() => void) | null = null;
   private flushing = false;
+
+  private markPending(): void {
+    if (this.flushing) return;
+    this.flushSiblings?.();
+  }
 
   drawCalls = 0;
   quadsDrawn = 0;
@@ -176,6 +186,7 @@ export class QuadBatch {
       this.flush();
       this.currentTexture = texture;
     }
+    this.markPending();
 
     const c = packColor(rgb, alpha);
     const base = this.quadCount * 4 * FLOATS_PER_VERTEX;
@@ -198,6 +209,7 @@ export class QuadBatch {
       this.flush();
       this.currentTexture = texture;
     }
+    this.markPending();
 
     const hw = w * 0.5;
     const hh = h * 0.5;
@@ -227,11 +239,6 @@ export class QuadBatch {
   flush(): void {
     if (this.quadCount === 0 || !this.currentTexture || this.flushing) return;
     this.flushing = true;
-    try {
-      this.beforeFlush?.();
-    } finally {
-      this.flushing = false;
-    }
     const gl = this.gl;
 
     this.shader.use();
@@ -250,6 +257,7 @@ export class QuadBatch {
     this.drawCalls++;
     this.quadsDrawn += this.quadCount;
     this.quadCount = 0;
+    this.flushing = false;
   }
 
   dispose(): void {
