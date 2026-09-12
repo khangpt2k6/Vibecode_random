@@ -12,3 +12,11 @@ docs/superpowers/
 playwright-report/
 test-results/
 screenshots/
+
+# playwright
+e2e-results/
+
+# downloaded model kits and baker scratch - only the baked atlas is committed
+assets-src/raw/
+assets-src/zips/
+.scratch/

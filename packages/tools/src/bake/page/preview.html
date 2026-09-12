@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>atlas preview</title>
+<body style="margin:0;background:#7fcb3f">
+<script>
+/**
+ * Contact sheet for the baked atlas, drawn on a real isometric grid.
+ *
+ * Each sprite gets one cell: the tile diamond is drawn first, then the
+ * sprite is placed by subtracting its anchor. If the bake is right the
+ * sprite stands on the diamond. If the scale is wrong it will not match the
+ * diamond's width; if the anchor is wrong it floats or sinks. The red dot is
+ * the anchor, so both failures are one glance apart.
+ */
+
+// Matches DEFAULT_ISO in packages/engine/src/math/iso.ts.
+const TILE_W = 64;
+const TILE_H = 32;
+
+const CELL_W = 200;
+const CELL_H = 190;
+const LABEL_H = 14;
+
+function drawTile(ctx, cx, cy) {
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - TILE_H / 2);
+  ctx.lineTo(cx + TILE_W / 2, cy);
+  ctx.lineTo(cx, cy + TILE_H / 2);
+  ctx.lineTo(cx - TILE_W / 2, cy);
+  ctx.closePath();
+  ctx.fillStyle = '#9ede54';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(47,59,74,0.35)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+window.renderPreview = async ({ man, ids, cols }) => {
+  const images = [];
+  for (const src of man.pages) {
+    const img = new Image();
+    img.src = src;
+    await img.decode();
+    images.push(img);
+  }
+
+  const rows = Math.ceil(ids.length / cols);
+  const c = document.createElement('canvas');
+  c.width = cols * CELL_W;
+  c.height = rows * CELL_H;
+  const ctx = c.getContext('2d');
+
+  // Sky, so transparent edges and pale sprites are both visible.
+  const sky = ctx.createLinearGradient(0, 0, 0, c.height);
+  sky.addColorStop(0, '#93dcfa');
+  sky.addColorStop(1, '#d9f4ff');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  ctx.font = '11px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+
+  ids.forEach((id, i) => {
+    const f = man.frames[id];
+    if (!f) return;
+    const col = i % cols;
+    const row = (i / cols) | 0;
+    // Ground point of this cell, low enough that a tall sprite still fits.
+    const cx = col * CELL_W + CELL_W / 2;
+    const cy = row * CELL_H + CELL_H - LABEL_H - 22;
+
+    drawTile(ctx, cx, cy);
+
+    const w = f.w / man.density;
+    const h = f.h / man.density;
+    ctx.drawImage(
+      images[f.p], f.x, f.y, f.w, f.h,
+      Math.round(cx - f.ax / man.density), Math.round(cy - f.ay / man.density), w, h,
+    );
+
+    ctx.fillStyle = '#f2495c';
+    ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3);
+
+    ctx.fillStyle = '#2f3b4a';
+    const short = id.length > 26 ? id.slice(0, 25) + '…' : id;
+    ctx.fillText(short, cx, row * CELL_H + CELL_H - 4);
+  });
+
+  return c.toDataURL('image/png');
+};
+</script>
