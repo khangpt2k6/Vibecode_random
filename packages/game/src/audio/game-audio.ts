@@ -29,6 +29,9 @@ const SOURCES: Record<string, string> = {
 
 const STORAGE_KEY = 'stackmon.audio.v1';
 
+/** Keys that open or close a panel, and so deserve a sound. */
+const OVERLAY_KEYS = new Set(['b', 'g', 'h', 'j', 'c']);
+
 interface StoredSettings {
   muted: boolean;
   master: number;
@@ -97,10 +100,10 @@ export class GameAudio {
         this.setMuted(!this.bus.isMuted);
         return;
       }
-      // Any key that opens or closes something in this game is a letter, and
-      // a soft tick makes the overlay feel like it answered.
-      if (/^[a-zA-Z]$/.test(e.key) || e.key === 'Escape') {
-        this.sfx.play('open', { gain: 0.3, variance: 0.06, throttleMs: 90 });
+      // Only the keys that put something on screen. WASD is held down to pan
+      // the camera, and a tick per direction turns walking into morse code.
+      if (OVERLAY_KEYS.has(e.key.toLowerCase()) || e.key === 'Escape') {
+        this.sfx.play('open', { gain: 0.32, variance: 0.06, throttleMs: 90 });
       }
     });
   }
