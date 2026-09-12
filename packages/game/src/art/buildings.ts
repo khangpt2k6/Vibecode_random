@@ -85,7 +85,7 @@ export function drawBuilding(b: ShapeBatch, p: GridPos, style: BuildingStyle, ti
   b.circle(signX, signY - 30, r + 2, PALETTE.uiShadow, 0.18, 0, 16);
   b.circle(signX, signY - 31, r + 1.5, PALETTE.uiPanel, 1, 0, 18);
   b.ring(signX, signY - 31, r + 1.5, 2.2, shade(roofColor, -0.12), 1, 0, 20);
-  drawIcon(b, style.creatureId, signX, signY - 31, r * 0.78, style.type);
+  drawIcon(b, style.creatureId, signX, signY - 31, r * 0.78);
 }
 
 /** A short stone slab, used as a plinth under buildings. */

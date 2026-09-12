@@ -1,14 +1,21 @@
 import type { ShapeBatch } from '@stackmon/engine';
+import { brandOf } from '@stackmon/content';
 import { PALETTE, TYPE_COLORS, shade, type TypeId } from './palette.js';
 import { box, cone, footprint, ovoid, prism, slab, sphere } from './solids.js';
 
 /**
  * Creature sprites.
  *
- * Every creature is a chunky solid form of the technology it represents:
- * Redis is a stack of red discs, Docker is a whale carrying containers,
- * Postgres is a blue elephant, ClickHouse is a row of columns. Then it gets
- * eyes, and eyes are what turn a diagram into a character.
+ * Every creature is a chunky solid form of the technology it represents, in
+ * that technology's own brand colours: Redis is a stack of THAT red, Docker
+ * is THAT blue whale, Go is THAT cyan, Python is blue over yellow. Then it
+ * gets eyes, and eyes are what turn a diagram into a character.
+ *
+ * Brand colour is identity, family colour is mechanics. Colouring bodies by
+ * family made the roster readable as game pieces and unrecognisable as
+ * technologies, which is the wrong trade for a game whose whole point is
+ * that you already know these logos. The family shows up instead on the
+ * badge ring, the battle platform, and the name plate stripe.
  *
  * The bodies share one pose contract - a ground point, a scale, a facing, and
  * the bob and squash of the current animation frame - so the wander and
@@ -39,7 +46,12 @@ interface Pose {
   y: number;
   /** Base unit: about the radius of a small body. */
   s: number;
+  /** The technology's primary brand colour. */
   color: number;
+  /** Its secondary brand colour, for a second mass or a marking. */
+  color2: number;
+  /** A small highlight: an eye ring, a beak, a spark. */
+  ink: number;
   facing: -1 | 1;
   /** Vertical squash from the hop, around 1. */
   squash: number;
@@ -55,11 +67,14 @@ export function drawCreature(b: ShapeBatch, c: CreatureVisual, time: number): vo
   const squash = c.moving > 0 ? 1 - Math.abs(Math.sin(t * 7)) * 0.08 : 1 + Math.sin(t * 2) * 0.03;
   const cycle = (t * 0.5 + c.phase) % 1;
 
+  const brand = brandOf(c.creatureId);
   const pose: Pose = {
     x: c.x,
     y: c.y - hop,
     s: 12 * c.scale,
-    color: TYPE_COLORS[c.type],
+    color: brand.primary,
+    color2: brand.secondary ?? shade(brand.primary, -0.28),
+    ink: brand.accent ?? PALETTE.wall,
     facing: c.facing,
     squash,
     t,
@@ -155,11 +170,11 @@ const varnish: BodyFn = (b, p) => {
 /** Caffeine: a coffee bean with the seam down the middle. */
 const caffeine: BodyFn = (b, p) => {
   const r = p.s * 1.1;
-  feet(b, p, r * 0.5, PALETTE.trunkDeep);
-  ovoid(b, p.x, p.y - r * 1.05, r * 0.85, r * 1.15 * p.squash, PALETTE.trunk);
+  feet(b, p, r * 0.5, p.color2);
+  ovoid(b, p.x, p.y - r * 1.05, r * 0.85, r * 1.15 * p.squash, p.color);
   b.polyline(
     [p.x - r * 0.15, p.y - r * 2.0, p.x + r * 0.12, p.y - r * 1.05, p.x - r * 0.15, p.y - r * 0.15],
-    r * 0.14, shade(PALETTE.trunkDeep, -0.3), 1, 0,
+    r * 0.14, p.color2, 1, 0,
   );
   eyes(b, p, p.x, p.y - r * 1.25, r * 0.36, p.s * 0.26);
 };
@@ -262,7 +277,7 @@ const rabbitmq: BodyFn = (b, p) => {
   for (const side of [-1, 1] as const) {
     const wag = Math.sin(p.t * 3 + side) * r * 0.08;
     ovoid(b, p.x + side * r * 0.45 + wag, p.y - r * 2.55, r * 0.3, r * 0.85, p.color);
-    b.ellipse(p.x + side * r * 0.45 + wag, p.y - r * 2.5, r * 0.14, r * 0.55, PALETTE.flowerPink, 1, 0, 10);
+    b.ellipse(p.x + side * r * 0.45 + wag, p.y - r * 2.5, r * 0.14, r * 0.55, p.color2, 1, 0, 10);
   }
   ovoid(b, p.x, p.y - r * 0.95, r * 0.95, r * 0.95 * p.squash, p.color);
   b.ellipse(p.x, p.y - r * 0.55, r * 0.45, r * 0.3, PALETTE.wall, 0.9, 0, 12);
@@ -309,7 +324,7 @@ const jvm: BodyFn = (b, p) => {
   // Handle.
   b.ring(p.x + r * 1.15, p.y - h * 0.55, r * 0.42, r * 0.16, shade(p.color, -0.1), 1, 0, 16, -Math.PI * 0.5, Math.PI);
   // Coffee surface.
-  b.ellipse(p.x, p.y - h, r * 0.8, r * 0.4, PALETTE.trunkDeep, 1, 0, 18);
+  b.ellipse(p.x, p.y - h, r * 0.8, r * 0.4, 0x4a3323, 1, 0, 18);
   for (let i = -1; i <= 1; i++) {
     const rise = (p.t * 0.6 + i * 0.33) % 1;
     b.circle(p.x + i * r * 0.35 + Math.sin(rise * 6) * 3, p.y - h - r * 0.4 - rise * 22, 3 + rise * 3, PALETTE.cloud, (1 - rise) * 0.6, 0, 8);
@@ -329,14 +344,14 @@ const cpython: BodyFn = (b, p) => {
     [1.9, -0.7, 1],
   ];
   for (const [dx, dy, c] of segs) {
-    sphere(b, p.x + p.facing * dx * p.s, p.y + dy * p.s - r, r, c === 0 ? p.color : PALETTE.flowerYellow, 14);
+    sphere(b, p.x + p.facing * dx * p.s, p.y + dy * p.s - r, r, c === 0 ? p.color : p.color2, 14);
   }
   // Head.
   const hx = p.x + p.facing * 2.0 * p.s;
   const hy = p.y - r * 3.6;
   sphere(b, hx, hy, r * 1.25, p.color, 16);
   eyes(b, p, hx, hy - r * 0.2, r * 0.5, p.s * 0.2);
-  b.line(hx + p.facing * r * 1.1, hy + r * 0.6, hx + p.facing * r * 1.9, hy + r * 0.75, 1.5, PALETTE.flowerPink, 1, 0);
+  b.line(hx + p.facing * r * 1.1, hy + r * 0.6, hx + p.facing * r * 1.9, hy + r * 0.75, 1.5, p.color2, 1, 0);
 };
 
 /** Node: a hexagonal prism. */
@@ -361,7 +376,7 @@ const golang: BodyFn = (b, p) => {
   eyes(b, p, p.x, p.y - r * 1.2, r * 0.42, p.s * 0.38, false);
   b.rect(p.x - r * 0.14, p.y - r * 0.5, r * 0.12, r * 0.2, PALETTE.wall, 1, 0);
   b.rect(p.x + r * 0.02, p.y - r * 0.5, r * 0.12, r * 0.2, PALETTE.wall, 1, 0);
-  b.ellipse(p.x, p.y - r * 0.72, r * 0.12, r * 0.08, PALETTE.trunkDeep, 1, 0, 8);
+  b.ellipse(p.x, p.y - r * 0.72, r * 0.12, r * 0.08, 0x333333, 1, 0, 8);
 };
 
 /** Docker: a whale with containers stacked on its back. */
@@ -436,7 +451,8 @@ const elasticsearch: BodyFn = (b, p) => {
   const r = p.s * 1.25;
   const cy = p.y - r * 1.25;
   feet(b, p, r * 0.5, p.color);
-  const colors = [PALETTE.typeIntel, PALETTE.typeCache, PALETTE.typeInfra, PALETTE.typeData];
+  // Elastic is four colours at once; that IS the mark.
+  const colors = [p.color, p.color2, p.ink, 0x1ba9f5];
   const spin = p.t * 0.8;
   for (let i = 0; i < 4; i++) {
     const from = spin + (i / 4) * Math.PI * 2 + 0.18;
@@ -452,7 +468,7 @@ const spark: BodyFn = (b, p) => {
   const flick = 1 + Math.sin(p.t * 9) * 0.05 + Math.sin(p.t * 13.7) * 0.03;
   feet(b, p, r * 0.5, p.color);
   cone(b, p.x, p.y, r, r * 2.7 * flick * p.squash, p.color);
-  cone(b, p.x + r * 0.05, p.y - r * 0.15, r * 0.55, r * 1.55 * flick, PALETTE.flowerYellow);
+  cone(b, p.x + r * 0.05, p.y - r * 0.15, r * 0.55, r * 1.55 * flick, p.color2);
   eyes(b, p, p.x, p.y - r * 1.1, r * 0.34, p.s * 0.26);
 };
 

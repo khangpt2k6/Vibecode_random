@@ -14,6 +14,8 @@ export * from './schema.js';
 export * from './skills.js';
 export * from './incidents.js';
 export * from './biomes.js';
+export * from './brands.js';
+export * from './build.js';
 export * from './creatures/index.js';
 
 export const CONTENT_VERSION = 1;

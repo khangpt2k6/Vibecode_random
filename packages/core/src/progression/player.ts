@@ -4,6 +4,7 @@ import {
   type CreatureSpec,
   type ResourceId,
 } from '@stackmon/content';
+import { newBase, type BaseState } from './base.js';
 import type { Rng } from '@stackmon/util';
 
 /**
@@ -51,6 +52,8 @@ export interface PlayerState {
   bench: string[];
 
   resources: Record<ResourceId, number>;
+  /** Farm plots, construction, and everything built. */
+  base: BaseState;
 
   /** incident id -> best result. */
   incidents: Record<string, { won: number; lost: number; bestTurns: number | null }>;
@@ -77,6 +80,7 @@ export function newPlayer(seed: string): PlayerState {
     party: [null, null, null],
     bench: [],
     resources: { compute: 40, memory: 40, bandwidth: 20, storage: 20, scrap: 60 },
+    base: newBase(),
     incidents: {},
     seen: [],
     unlockedSkills: [],
@@ -334,6 +338,13 @@ export function battleLineup(p: PlayerState): {
 
 /** Sanity-check a loaded save and repair what can be repaired. */
 export function normalise(p: PlayerState): PlayerState {
+  // Saves written before the base layer existed have no base at all.
+  p.base ??= newBase();
+  p.base.plots ??= [];
+  p.base.built ??= [];
+  p.base.seenGates ??= [];
+  p.base.building ??= null;
+
   const uids = new Set(p.roster.map((c) => c.uid));
   p.party = Array.from({ length: MAX_PARTY }, (_, i) => {
     const u = p.party[i] ?? null;
