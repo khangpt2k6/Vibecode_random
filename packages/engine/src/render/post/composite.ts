@@ -4,15 +4,18 @@ import { FullscreenPass } from './fullscreen.js';
 /**
  * Final composite.
  *
- * Combines the scene colour with the bloom, tone maps, and applies the grade
- * that gives the game its look: a slight chromatic split at the edges, a soft
- * vignette, faint scanlines, and a touch of animated grain.
+ * Combines the scene colour with the bloom, rolls off the highlights, and
+ * applies the grade.
  *
- * Every one of these is subtle on purpose. Each effect at full strength
- * screams "post-processing demo"; all of them at a quarter strength read as
- * "this world is being displayed on something". The scanlines in particular
- * are barely visible at 1x and are the single strongest cue that you are
- * looking at a monitor inside a data centre rather than at flat vector art.
+ * The grade is doing something specific: bright stylised daylight. A gentle
+ * saturation lift so the greens sing, warm highlights and slightly cool
+ * shadows so the image reads as sunlit rather than as flat fill, and a soft
+ * bloom that only touches things which actually asked to glow.
+ *
+ * The scanline, chromatic aberration and grain controls survive because they
+ * are useful for a specific effect - a glitching incident, a flashback - but
+ * they default to zero. A permanent CRT filter over a cartoon world is a
+ * costume, not a look.
  */
 
 const COMPOSITE_FRAG = `#version 300 es
@@ -36,6 +39,8 @@ uniform float uFlash;
 uniform vec3  uFlashColor;
 uniform float uDesaturate;
 uniform float uKnee;
+uniform float uSaturation;
+uniform float uWarmth;
 
 out vec4 outColor;
 
@@ -85,14 +90,26 @@ void main() {
   color *= uExposure;
   color = tonemap(color, uKnee);
 
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+
+  // Saturation lift. Applied after the tone map so the rolloff does not undo
+  // it, and clamped so a fully saturated source cannot go out of gamut.
+  color = clamp(mix(vec3(luma), color, uSaturation), 0.0, 1.0);
+
+  // Split tone: warm the highlights, cool the shadows. This is the cheapest
+  // way to make flat fills read as lit by an actual sun.
+  vec3 warm = vec3(1.045, 1.0, 0.94);
+  vec3 cool = vec3(0.95, 0.985, 1.06);
+  color *= mix(cool, warm, smoothstep(0.25, 0.85, luma) * uWarmth + (1.0 - uWarmth) * 0.5);
+  color = clamp(color, 0.0, 1.0);
+
   if (uDesaturate > 0.0001) {
-    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = mix(color, vec3(luma), uDesaturate);
   }
 
   // Vignette. smoothstep rather than a power curve so the falloff has no
   // visible ring where it begins.
-  float vig = smoothstep(0.9, 0.15, r2 * 1.9);
+  float vig = 1.0 - smoothstep(0.12, 0.62, r2);
   color *= mix(1.0, vig, uVignette);
 
   if (uScanlineIntensity > 0.0001) {
@@ -117,6 +134,10 @@ export interface CompositeSettings {
   exposure: number;
   /** Brightness above which highlights start compressing. */
   knee: number;
+  /** 1 leaves saturation alone; 1.15 is a gentle lift. */
+  saturation: number;
+  /** 0 is neutral, 1 fully warms highlights and cools shadows. */
+  warmth: number;
   vignette: number;
   scanlineIntensity: number;
   chromatic: number;
@@ -138,13 +159,15 @@ export interface CompositeSettings {
  * where it registers as fringing rather than as a bug.
  */
 export const DEFAULT_COMPOSITE: CompositeSettings = {
-  bloomIntensity: 0.5,
-  exposure: 1.0,
-  knee: 0.62,
-  vignette: 0.34,
-  scanlineIntensity: 0.035,
-  chromatic: 0.0045,
-  grain: 0.015,
+  bloomIntensity: 0.34,
+  exposure: 1.02,
+  knee: 0.74,
+  saturation: 1.14,
+  warmth: 0.85,
+  vignette: 0.16,
+  scanlineIntensity: 0,
+  chromatic: 0,
+  grain: 0,
   flash: 0,
   flashColor: 0xffffff,
   desaturate: 0,
@@ -190,6 +213,8 @@ export class CompositePass {
       sh.setFloat('uBloomIntensity', s.bloomIntensity);
       sh.setFloat('uExposure', s.exposure);
       sh.setFloat('uKnee', s.knee);
+      sh.setFloat('uSaturation', s.saturation);
+      sh.setFloat('uWarmth', s.warmth);
       sh.setFloat('uVignette', s.vignette);
       sh.setFloat('uScanlineIntensity', s.scanlineIntensity);
       // Tie the scanline count to real pixel height, so the spacing looks the

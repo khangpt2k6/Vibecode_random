@@ -107,8 +107,8 @@ export class BloomPass {
     height: number,
     opts: BloomOptions = {},
   ) {
-    this.levels = opts.levels ?? 6;
-    this.radius = opts.radius ?? 1.4;
+    this.levels = opts.levels ?? 5;
+    this.radius = opts.radius ?? 1.0;
 
     this.downsampleShader = fullscreen.makeShader(DOWNSAMPLE_FRAG, 'bloom-downsample');
     this.upsampleShader = fullscreen.makeShader(UPSAMPLE_FRAG, 'bloom-upsample');

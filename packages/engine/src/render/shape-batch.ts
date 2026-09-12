@@ -89,6 +89,20 @@ export class ShapeBatch {
    */
   private projection = new Float32Array(9);
 
+  /**
+   * Called right before this batch issues a draw, so a sibling batch can
+   * flush whatever it has pending first.
+   *
+   * Without this, submission order and draw order diverge: a batch that
+   * flushes mid-stream (on a texture change, or when it fills) draws ahead of
+   * a sibling that only flushes at the end of the layer. In practice that
+   * meant every UI panel was painted over the text that had been submitted
+   * before it, because the text batch flushed on its second font and the
+   * shape batch did not flush until the layer closed.
+   */
+  beforeFlush: (() => void) | null = null;
+  private flushing = false;
+
   /** Draw calls issued since the last `resetStats`. */
   drawCalls = 0;
   trianglesDrawn = 0;
@@ -440,8 +454,151 @@ export class ShapeBatch {
     );
   }
 
+
+  /**
+   * Block with the three visible faces coloured explicitly.
+   *
+   * The plain `isoBlock` derives its side colours by scaling the base, which
+   * can only ever darken toward black. Stylised daylight needs shaded faces
+   * tinted toward blue instead, and that decision belongs to the art layer,
+   * not to the batch - so this variant takes the three colours it was given.
+   */
+  isoBlockFaces(
+    p: GridPos, height: number,
+    topRgb: number, rightRgb: number, leftRgb: number,
+    alpha = 1, emissive = 0, cfg: IsoConfig = DEFAULT_ISO, inset = 0,
+  ): void {
+    const base = gridToScreen(p, cfg);
+    const hw = cfg.tileW * 0.5 - inset;
+    const hh = cfg.tileH * 0.5 - inset * 0.5;
+    const lift = height * cfg.elevation;
+
+    this.quad(
+      base.x - hw, base.y - lift,
+      base.x, base.y + hh - lift,
+      base.x, base.y + hh,
+      base.x - hw, base.y,
+      leftRgb, alpha, emissive,
+    );
+    this.quad(
+      base.x, base.y + hh - lift,
+      base.x + hw, base.y - lift,
+      base.x + hw, base.y,
+      base.x, base.y + hh,
+      rightRgb, alpha, emissive,
+    );
+    this.quad(
+      base.x, base.y - hh - lift,
+      base.x + hw, base.y - lift,
+      base.x, base.y + hh - lift,
+      base.x - hw, base.y - lift,
+      topRgb, alpha, emissive,
+    );
+  }
+
+  /** Axis-aligned ellipse. The workhorse for soft contact shadows. */
+  ellipse(
+    cx: number, cy: number, rx: number, ry: number,
+    rgb: number, alpha = 1, emissive = 0, segments = 20,
+  ): void {
+    this.reserve(segments + 1, segments * 3);
+    const c = packColor(rgb, alpha);
+    const centre = this.vertex(cx, cy, c, emissive);
+    const base = this.vertexCount;
+    for (let i = 0; i < segments; i++) {
+      const a = (i / segments) * Math.PI * 2;
+      this.vertex(cx + Math.cos(a) * rx, cy + Math.sin(a) * ry, c, emissive);
+    }
+    for (let i = 0; i < segments; i++) {
+      this.indices[this.indexCount++] = centre;
+      this.indices[this.indexCount++] = base + i;
+      this.indices[this.indexCount++] = base + ((i + 1) % segments);
+    }
+  }
+
+  /**
+   * Soft contact shadow on the ground under an object.
+   *
+   * Three stacked ellipses rather than one, so the edge fades instead of
+   * ending in a hard rim. Cheap, and it is most of what makes an object look
+   * like it is sitting on the ground rather than floating above a picture
+   * of the ground.
+   */
+  groundShadow(cx: number, cy: number, radius: number, rgb: number, strength = 0.26): void {
+    this.ellipse(cx, cy, radius * 1.25, radius * 0.62, rgb, strength * 0.32, 0, 18);
+    this.ellipse(cx, cy, radius * 1.0, radius * 0.5, rgb, strength * 0.5, 0, 18);
+    this.ellipse(cx, cy, radius * 0.72, radius * 0.36, rgb, strength, 0, 16);
+  }
+
+  /** Rounded rectangle, for UI panels and label plates. */
+  roundedRect(
+    x: number, y: number, w: number, h: number, r: number,
+    rgb: number, alpha = 1, emissive = 0, segments = 5,
+  ): void {
+    const rad = Math.min(r, w * 0.5, h * 0.5);
+    // Middle band plus the two side bands, then the four corner fans.
+    this.rect(x + rad, y, w - rad * 2, h, rgb, alpha, emissive);
+    this.rect(x, y + rad, rad, h - rad * 2, rgb, alpha, emissive);
+    this.rect(x + w - rad, y + rad, rad, h - rad * 2, rgb, alpha, emissive);
+
+    const corners: Array<[number, number, number]> = [
+      [x + rad, y + rad, Math.PI],
+      [x + w - rad, y + rad, Math.PI * 1.5],
+      [x + w - rad, y + h - rad, 0],
+      [x + rad, y + h - rad, Math.PI * 0.5],
+    ];
+    for (const [cx, cy, start] of corners) {
+      this.reserve(segments + 2, segments * 3);
+      const c = packColor(rgb, alpha);
+      const centre = this.vertex(cx, cy, c, emissive);
+      const base = this.vertexCount;
+      for (let i = 0; i <= segments; i++) {
+        const a = start + (i / segments) * (Math.PI * 0.5);
+        this.vertex(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad, c, emissive);
+      }
+      for (let i = 0; i < segments; i++) {
+        this.indices[this.indexCount++] = centre;
+        this.indices[this.indexCount++] = base + i;
+        this.indices[this.indexCount++] = base + i + 1;
+      }
+    }
+  }
+
+  /**
+   * A blob: a circle squashed and wobbled by a seed.
+   *
+   * Foliage and rocks drawn as perfect circles read as clip art. A little
+   * per-instance irregularity is the cheapest possible way to make a
+   * hand-made-looking world out of generated geometry.
+   */
+  blob(
+    cx: number, cy: number, rx: number, ry: number, seed: number,
+    rgb: number, alpha = 1, emissive = 0, segments = 14,
+  ): void {
+    this.reserve(segments + 1, segments * 3);
+    const c = packColor(rgb, alpha);
+    const centre = this.vertex(cx, cy, c, emissive);
+    const base = this.vertexCount;
+    for (let i = 0; i < segments; i++) {
+      const a = (i / segments) * Math.PI * 2;
+      const wobble = 1 + Math.sin(a * 3 + seed) * 0.08 + Math.sin(a * 5 - seed * 2) * 0.05;
+      this.vertex(cx + Math.cos(a) * rx * wobble, cy + Math.sin(a) * ry * wobble, c, emissive);
+    }
+    for (let i = 0; i < segments; i++) {
+      this.indices[this.indexCount++] = centre;
+      this.indices[this.indexCount++] = base + i;
+      this.indices[this.indexCount++] = base + ((i + 1) % segments);
+    }
+  }
+
   flush(): void {
-    if (this.indexCount === 0) return;
+    if (this.indexCount === 0 || this.flushing) return;
+    this.flushing = true;
+    try {
+      this.beforeFlush?.();
+    } finally {
+      this.flushing = false;
+    }
     const gl = this.gl;
 
     this.shader.use();

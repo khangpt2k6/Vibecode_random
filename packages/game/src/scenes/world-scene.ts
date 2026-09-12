@@ -7,167 +7,371 @@ import {
   drawText,
   gridToScreen,
   screenToGridOnHeightmap,
-  shadeRgb,
   type Scene,
   type SceneContext,
 } from '@stackmon/engine';
-import { PALETTE, TYPES, TYPE_IDS, typeFill, type TypeId } from '../art/palette.js';
+import {
+  PALETTE,
+  TYPE_COLORS,
+  TYPE_IDS,
+  faceColors,
+  mix,
+  shade,
+  type TypeId,
+} from '../art/palette.js';
+import {
+  anchorAt,
+  drawBush,
+  drawFlowers,
+  drawGrassTuft,
+  drawPathTile,
+  drawPine,
+  drawRock,
+  drawTree,
+  drawWaterTile,
+  type PropAnchor,
+} from '../art/nature.js';
+import { drawBuilding, drawMainHall, type BuildingStyle } from '../art/buildings.js';
+import { drawIconBadge } from '../art/icons.js';
 
 /**
  * The overworld.
  *
- * At this milestone it is a proving ground for the renderer rather than a
- * game: generated terrain, a handful of structures, hover picking, camera
- * control, and the particle and text layers, all running through the real
- * frame graph. Everything here is meant to be replaced by real world
- * streaming, but the visual language it establishes is not.
+ * A generated island: water, beach, meadow, and highland, densely planted.
+ *
+ * The density is the point. A world with six trees on it looks generated no
+ * matter how good the individual tree is; the same world with four hundred
+ * pieces of small scatter looks placed. Everything here is cheap enough to
+ * afford that - the whole island is a few thousand triangles in three draw
+ * calls - so the budget goes on quantity of detail rather than on fidelity
+ * of any single object.
  */
 
-const MAP_SIZE = 48;
-const MAX_HEIGHT = 5;
+const MAP_SIZE = 44;
+const MAX_HEIGHT = 6;
 
-/** Terrain colour by elevation, index 0 being the void floor. */
-const TERRAIN_RAMP = [
-  PALETTE.voidMid,
-  PALETTE.terrainBase,
-  PALETTE.terrainLow,
-  PALETTE.terrainMid,
-  PALETTE.terrainHigh,
-  PALETTE.terrainPeak,
-];
+type Terrain = 'water' | 'sand' | 'grass' | 'rock';
 
 interface Tile {
   height: number;
+  terrain: Terrain;
+  /** Base colour, jittered per tile so large areas are never flat. */
   color: number;
-  /** 0 for plain ground, 1 for a lit circuit trace running through it. */
-  trace: number;
+  /** True for a water tile touching land, which gets a foam edge. */
+  shore: boolean;
+  path: boolean;
+}
+
+type PropKind = 'tree' | 'pine' | 'bush' | 'rock' | 'flowers' | 'tuft';
+
+interface Prop {
+  kind: PropKind;
+  anchor: PropAnchor;
+  /** Sort key, so props interleave correctly with terrain and buildings. */
+  depth: number;
 }
 
 interface Structure {
   gx: number;
   gy: number;
-  height: number;
-  type: TypeId;
+  style: BuildingStyle;
   label: string;
-  /** Phase offset so identical structures do not pulse in lockstep. */
-  phase: number;
+  creatureId: string;
 }
+
+const TECH_BY_TYPE: Record<TypeId, Array<[string, string]>> = {
+  data: [['postgres', 'POSTGRES'], ['mysql', 'MYSQL'], ['mongo', 'MONGO'], ['sqlite', 'SQLITE']],
+  stream: [['kafka', 'KAFKA'], ['rabbitmq', 'RABBITMQ'], ['pulsar', 'PULSAR'], ['nats', 'NATS']],
+  runtime: [['jvm', 'JVM'], ['cpython', 'PYTHON'], ['node', 'NODE'], ['golang', 'GO']],
+  infra: [['docker', 'DOCKER'], ['kubernetes', 'K8S'], ['nginx', 'NGINX'], ['envoy', 'ENVOY']],
+  cache: [
+    ['redis', 'REDIS'],
+    ['memcached', 'MEMCACHED'],
+    ['varnish', 'VARNISH'],
+    ['caffeine', 'CAFFEINE'],
+  ],
+  intel: [
+    ['elasticsearch', 'ELASTIC'],
+    ['spark', 'SPARK'],
+    ['clickhouse', 'CLICKHOUSE'],
+    ['milvus', 'MILVUS'],
+  ],
+};
 
 export class WorldScene implements Scene {
   readonly name = 'world';
 
   private tiles: Tile[] = [];
+  private props: Prop[] = [];
   private structures: Structure[] = [];
+  private hallAt = { gx: 0, gy: 0 };
+
   private font!: Font;
+  private fontSmall!: Font;
   private particles!: ParticleSystem;
-  private rng = new Rng('stackmon-overworld-v1');
+  private readonly rng = new Rng('stackmon-island-v2');
   private time = 0;
 
   private hoverGx = -1;
   private hoverGy = -1;
 
   enter(ctx: SceneContext): void {
-    this.font = new Font(ctx.renderer.gl, { size: 13, weight: 600 });
+    this.font = new Font(ctx.renderer.gl, { size: 17, weight: 700 });
+    this.fontSmall = new Font(ctx.renderer.gl, { size: 11, weight: 600 });
     this.particles = new ParticleSystem(this.rng.fork('particles'));
 
     this.generateTerrain();
+    this.carvePaths();
     this.placeStructures();
+    this.scatterProps();
 
     const camera = ctx.renderer.camera;
-    const centre = gridToScreen({ gx: MAP_SIZE / 2, gy: MAP_SIZE / 2, h: 0 }, DEFAULT_ISO);
-    camera.minZoom = 0.28;
-    camera.maxZoom = 3;
+    const centre = gridToScreen({ gx: MAP_SIZE / 2, gy: MAP_SIZE / 2, h: 1 }, DEFAULT_ISO);
+    camera.minZoom = 0.3;
+    camera.maxZoom = 2.6;
 
-    // Fit the whole island on entry. An isometric map of N tiles is N*tileW
-    // wide and N*tileH tall in world pixels, so the zoom that frames it is
-    // whichever axis runs out first, with a margin so it does not touch the
-    // screen edges.
     const worldW = MAP_SIZE * DEFAULT_ISO.tileW;
     const worldH = MAP_SIZE * DEFAULT_ISO.tileH + MAX_HEIGHT * DEFAULT_ISO.elevation;
-    const fit = Math.min(
-      ctx.renderer.ctx.width / worldW,
-      ctx.renderer.ctx.height / worldH,
-    ) * 0.92;
+    const fit = Math.min(ctx.renderer.ctx.width / worldW, ctx.renderer.ctx.height / worldH) * 1.4;
     camera.snapTo(centre.x, centre.y);
-    camera.setZoom(Math.max(camera.minZoom, fit), true);
-
+    camera.setZoom(Math.max(camera.minZoom, Math.min(1.1, fit)), true);
     camera.bounds = {
-      minX: -worldW / 2 - 200,
-      maxX: worldW / 2 + 200,
-      minY: -200,
-      maxY: worldH + 200,
+      minX: -worldW / 2 - 160,
+      maxX: worldW / 2 + 160,
+      minY: -160,
+      maxY: worldH + 160,
     };
   }
 
   exit(): void {
     this.font.dispose();
+    this.fontSmall.dispose();
   }
 
+  // ------------------------------------------------------------ generation
+
   private generateTerrain(): void {
-    const noise = new ValueNoise2D('terrain-v1');
-    const detail = new ValueNoise2D('detail-v1');
+    const shapeNoise = new ValueNoise2D('island-shape-v2');
+    const detail = new ValueNoise2D('island-detail-v2');
+    const hue = new ValueNoise2D('grass-hue-v2');
+    const rocky = new ValueNoise2D('rockiness-v2');
     this.tiles = new Array(MAP_SIZE * MAP_SIZE);
 
     for (let gy = 0; gy < MAP_SIZE; gy++) {
       for (let gx = 0; gx < MAP_SIZE; gx++) {
-        const n = noise.fbm(gx * 0.055, gy * 0.055, 4);
-
-        // Pull the edges down so the island reads as a platform floating in
-        // the void rather than a slab clipped by the screen.
+        // Radial falloff shapes the island; noise makes the coastline ragged
+        // so it does not read as a circle someone drew.
         const dx = (gx / MAP_SIZE - 0.5) * 2;
         const dy = (gy / MAP_SIZE - 0.5) * 2;
-        const edge = 1 - Math.min(1, Math.hypot(dx, dy) * 1.05);
-        const shaped = n * 0.65 + edge * 0.55;
+        const radial = 1 - Math.min(1, Math.hypot(dx, dy) * 1.12);
+        const n = shapeNoise.fbm(gx * 0.075, gy * 0.075, 4);
+        const elevation = radial * 0.8 + n * 0.4 - 0.16;
 
-        const height = Math.max(0, Math.min(MAX_HEIGHT, Math.round(shaped * MAX_HEIGHT)));
+        let terrain: Terrain;
+        let height: number;
 
-        // Circuit traces: thin ridges of the detail noise, lit up. They give
-        // the ground somewhere for the eye to travel instead of reading as
-        // undifferentiated terrain.
-        const d = detail.fbm(gx * 0.14, gy * 0.14, 3);
-        const trace = d > 0.545 && d < 0.558 && height > 0 ? 1 : 0;
+        if (elevation < 0.05) {
+          terrain = 'water';
+          height = 0;
+        } else if (elevation < 0.12) {
+          terrain = 'sand';
+          height = 1;
+        } else {
+          // A gentle curve, so the interior is rolling meadow with a few
+          // hills rather than one saturated plateau. The earlier mapping hit
+          // its ceiling almost immediately and flattened the whole middle of
+          // the island into a single grey slab.
+          const ridge = detail.fbm(gx * 0.13, gy * 0.13, 4);
+          const h = (elevation - 0.12) * 1.15 + ridge * 0.55;
+          height = 1 + Math.round(Math.max(0, Math.min(1, h)) * (MAX_HEIGHT - 1));
 
-        // Ramp the colour by elevation rather than shading one base tone, so
-        // the plateaus separate tonally instead of all reading as one mass.
-        const base = TERRAIN_RAMP[Math.min(TERRAIN_RAMP.length - 1, height)]!;
+          // Rock is its own patchy feature, not simply "anywhere high".
+          // Tying it to altitude alone meant every hilltop was bare stone.
+          const stone = rocky.fbm(gx * 0.11, gy * 0.11, 3);
+          terrain = stone > 0.68 && height >= 3 ? 'rock' : 'grass';
+        }
 
-        this.tiles[gy * MAP_SIZE + gx] = { height, color: base, trace };
+        const jitter = hue.sample(gx * 0.55, gy * 0.55);
+        this.tiles[gy * MAP_SIZE + gx] = {
+          height,
+          terrain,
+          color: tileColor(terrain, height, jitter),
+          shore: false,
+          path: false,
+        };
+      }
+    }
+
+    for (let gy = 0; gy < MAP_SIZE; gy++) {
+      for (let gx = 0; gx < MAP_SIZE; gx++) {
+        const t = this.tiles[gy * MAP_SIZE + gx]!;
+        if (t.terrain !== 'water') continue;
+        t.shore =
+          this.terrainAt(gx + 1, gy) !== 'water' ||
+          this.terrainAt(gx - 1, gy) !== 'water' ||
+          this.terrainAt(gx, gy + 1) !== 'water' ||
+          this.terrainAt(gx, gy - 1) !== 'water';
       }
     }
   }
 
-  private placeStructures(): void {
-    const rng = this.rng.fork('structures');
-    const names: Record<TypeId, string[]> = {
-      data: ['POSTGRES', 'MYSQL', 'MONGO'],
-      stream: ['KAFKA', 'RABBITMQ', 'PULSAR'],
-      runtime: ['JVM', 'CPYTHON', 'NODE'],
-      infra: ['DOCKER', 'K8S', 'NGINX'],
-      cache: ['REDIS', 'MEMCACHED', 'VARNISH'],
-      intel: ['ELASTIC', 'SPARK', 'CLICKHOUSE'],
-    };
-
-    let attempts = 0;
-    while (this.structures.length < 22 && attempts < 800) {
-      attempts++;
-      const gx = rng.int(3, MAP_SIZE - 4);
-      const gy = rng.int(3, MAP_SIZE - 4);
-      const tile = this.tiles[gy * MAP_SIZE + gx];
-      if (!tile || tile.height < 2) continue;
-      // Keep them apart so the skyline has gaps to read silhouettes against.
-      if (this.structures.some((s) => Math.abs(s.gx - gx) + Math.abs(s.gy - gy) < 5)) continue;
-
-      const type = rng.pick(TYPE_IDS);
-      this.structures.push({
-        gx,
-        gy,
-        height: rng.int(2, 5),
-        type,
-        label: rng.pick(names[type]),
-        phase: rng.range(0, Math.PI * 2),
-      });
+  /**
+   * Paths across the island.
+   *
+   * L-shaped runs rather than pathfinding, because the purpose is visual: a
+   * path gives the eye a route across the meadow and makes the settlement
+   * read as connected rather than as objects dropped on grass.
+   */
+  private carvePaths(): void {
+    const mid = Math.floor(MAP_SIZE / 2);
+    this.hallAt = { gx: mid, gy: mid };
+    // A short plaza around the hall, and nothing else until structures
+    // branch off it. A full-width cross turned a third of the island into
+    // bare ground, which read as a construction site rather than a village.
+    for (let d = -3; d <= 3; d++) {
+      this.markPath(mid + d, mid);
+      this.markPath(mid, mid + d);
     }
+  }
+
+  private markPath(gx: number, gy: number): void {
+    const t = this.tiles[gy * MAP_SIZE + gx];
+    if (!t || t.terrain === 'water') return;
+    t.path = true;
+  }
+
+  private pathTo(gx: number, gy: number): void {
+    const mid = Math.floor(MAP_SIZE / 2);
+    const stepX = gx > mid ? 1 : -1;
+    for (let x = mid; x !== gx; x += stepX) this.markPath(x, gy);
+    const stepY = gy > mid ? 1 : -1;
+    for (let y = mid; y !== gy; y += stepY) this.markPath(mid, y);
+    this.markPath(gx, gy);
+  }
+
+  private placeStructures(): void {
+    const rng = this.rng.fork('structures-v2');
+    const mid = Math.floor(MAP_SIZE / 2);
+
+    const all: Array<[TypeId, string, string]> = [];
+    for (const type of TYPE_IDS) {
+      for (const [id, label] of TECH_BY_TYPE[type]) all.push([type, id, label]);
+    }
+    rng.shuffle(all);
+
+    for (const [type, creatureId, label] of all) {
+      for (let attempt = 0; attempt < 300; attempt++) {
+        const gx = rng.int(4, MAP_SIZE - 5);
+        const gy = rng.int(4, MAP_SIZE - 5);
+        const t = this.tiles[gy * MAP_SIZE + gx];
+        if (!t || t.terrain === 'water' || t.terrain === 'sand') continue;
+        if (Math.abs(gx - mid) < 3 && Math.abs(gy - mid) < 3) continue;
+        if (this.structures.some((s) => Math.abs(s.gx - gx) + Math.abs(s.gy - gy) < 5)) continue;
+        // Needs a flat footprint, or the house floats off its own plinth.
+        if (!this.isFlat(gx, gy)) continue;
+
+        this.structures.push({
+          gx,
+          gy,
+          creatureId,
+          label,
+          style: {
+            size: 1,
+            storeys: rng.int(1, 2),
+            type,
+            creatureId,
+            seed: rng.range(0, Math.PI * 2),
+          },
+        });
+        this.pathTo(gx, gy);
+        break;
+      }
+    }
+
     this.structures.sort((a, b) => a.gx + a.gy - (b.gx + b.gy));
+  }
+
+  private isFlat(gx: number, gy: number): boolean {
+    const h = this.heightAt(gx, gy);
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (this.heightAt(gx + dx, gy + dy) !== h) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Scatter.
+   *
+   * Density varies by terrain and by a noise field, so the meadow has thick
+   * copses and open clearings rather than an even sprinkle. An even sprinkle
+   * is exactly what makes a generated world look generated.
+   */
+  private scatterProps(): void {
+    const rng = this.rng.fork('props-v2');
+    const density = new ValueNoise2D('forest-density-v2');
+    this.props = [];
+
+    for (let gy = 0; gy < MAP_SIZE; gy++) {
+      for (let gx = 0; gx < MAP_SIZE; gx++) {
+        const t = this.tiles[gy * MAP_SIZE + gx]!;
+        if (t.terrain === 'water' || t.path) continue;
+        if (this.nearStructure(gx, gy, 1)) continue;
+        if (Math.abs(gx - this.hallAt.gx) <= 2 && Math.abs(gy - this.hallAt.gy) <= 2) continue;
+
+        const forest = density.fbm(gx * 0.09, gy * 0.09, 3);
+        const count = this.propCountFor(t, forest, rng);
+
+        for (let i = 0; i < count; i++) {
+          const jx = rng.range(-0.33, 0.33);
+          const jy = rng.range(-0.33, 0.33);
+          this.props.push({
+            kind: this.propKindFor(t, forest, rng),
+            anchor: anchorAt(
+              { gx: gx + jx, gy: gy + jy, h: t.height },
+              rng.range(0, Math.PI * 2),
+              rng.range(0.72, 1.18),
+            ),
+            // Props sort within their tile by how far down it they sit, so a
+            // bush in front of a tree is drawn after it.
+            depth: gx + gy + (jx + jy) * 0.5,
+          });
+        }
+      }
+    }
+
+    this.props.sort((a, b) => a.depth - b.depth);
+  }
+
+  private propCountFor(t: Tile, forest: number, rng: Rng): number {
+    if (t.terrain === 'sand') return rng.chance(0.18) ? 1 : 0;
+    if (t.terrain === 'rock') return rng.chance(0.42) ? 1 : 0;
+    const p = 0.2 + forest * 0.95;
+    if (rng.next() > p) return 0;
+    return rng.chance(0.3) ? 2 : 1;
+  }
+
+  private propKindFor(t: Tile, forest: number, rng: Rng): PropKind {
+    if (t.terrain === 'sand') return rng.chance(0.6) ? 'rock' : 'tuft';
+    if (t.terrain === 'rock') return rng.chance(0.6) ? 'rock' : 'pine';
+    if (forest > 0.6) {
+      return rng.pickWeighted(['tree', 'pine', 'bush'] as const, (k) =>
+        k === 'tree' ? 5 : k === 'pine' ? 3 : 2,
+      );
+    }
+    return rng.pickWeighted(['tree', 'bush', 'flowers', 'tuft'] as const, (k) =>
+      k === 'tree' ? 2 : k === 'bush' ? 3 : 4,
+    );
+  }
+
+  private nearStructure(gx: number, gy: number, r: number): boolean {
+    return this.structures.some((s) => Math.abs(s.gx - gx) <= r && Math.abs(s.gy - gy) <= r);
+  }
+
+  private terrainAt(gx: number, gy: number): Terrain {
+    if (gx < 0 || gy < 0 || gx >= MAP_SIZE || gy >= MAP_SIZE) return 'water';
+    return this.tiles[gy * MAP_SIZE + gx]!.terrain;
   }
 
   private heightAt = (gx: number, gy: number): number => {
@@ -175,15 +379,16 @@ export class WorldScene implements Scene {
     return this.tiles[gy * MAP_SIZE + gx]!.height;
   };
 
+  // ---------------------------------------------------------------- update
+
   update(dt: number, ctx: SceneContext): void {
     this.time += dt;
     const { camera } = ctx.renderer;
     const { input } = ctx;
 
-    // --- camera ---
     const axis = input.axis();
     if (axis.x !== 0 || axis.y !== 0) {
-      const speed = 520 / camera.zoom;
+      const speed = 480 / camera.zoom;
       camera.panBy(axis.x * speed * dt, axis.y * speed * dt);
     }
     if (input.pointer.dragging) {
@@ -193,89 +398,73 @@ export class WorldScene implements Scene {
       camera.zoomAt(input.pointer.position, Math.pow(0.999, input.pointer.wheel));
     }
 
-    // --- hover pick ---
     const world = camera.screenToWorld(input.pointer.position);
     const picked = screenToGridOnHeightmap(world, this.heightAt, MAX_HEIGHT, DEFAULT_ISO);
     this.hoverGx = picked ? picked.gx : -1;
     this.hoverGy = picked ? picked.gy : -1;
 
-    // --- click feedback ---
     if (input.clicked && picked) {
-      const p = gridToScreen({ gx: picked.gx + 0.5, gy: picked.gy + 0.5, h: picked.h }, DEFAULT_ISO);
+      const p = gridToScreen({ gx: picked.gx, gy: picked.gy, h: picked.h }, DEFAULT_ISO);
       this.particles.emit({
         x: p.x,
         y: p.y,
-        count: 26,
-        color: PALETTE.glowCyan,
-        colorEnd: PALETTE.typeData,
-        speedMin: 30,
-        speedMax: 190,
-        lifeMin: 0.25,
-        lifeMax: 0.75,
+        count: 14,
+        color: PALETTE.sparkle,
+        colorEnd: PALETTE.flowerYellow,
+        speedMin: 25,
+        speedMax: 90,
+        lifeMin: 0.3,
+        lifeMax: 0.7,
         sizeMin: 2,
-        sizeMax: 5,
-        gravity: 220,
-        shape: 'streak',
-        emissive: 2.2,
-      });
-      ctx.renderer.camera.shake(0.12);
-    }
-
-    // --- ambient emission from structures ---
-    if (this.rng.chance(dt * 7)) {
-      const s = this.rng.pick(this.structures);
-      const p = gridToScreen({ gx: s.gx + 0.5, gy: s.gy + 0.5, h: s.height }, DEFAULT_ISO);
-      this.particles.emit({
-        x: p.x,
-        y: p.y - 6,
-        count: 1,
-        color: TYPES[s.type].color,
-        speedMin: 8,
-        speedMax: 26,
-        angle: -Math.PI / 2,
-        spread: 0.7,
-        lifeMin: 1.2,
-        lifeMax: 2.4,
-        sizeMin: 2,
-        sizeMax: 3.5,
-        drag: 0.85,
-        gravity: -14,
+        sizeMax: 4,
+        gravity: 130,
         shape: 'spark',
-        emissive: 2.6,
+        emissive: 1.1,
       });
     }
 
     this.particles.update(dt);
   }
 
+  // ---------------------------------------------------------------- render
+
   render(_alpha: number, ctx: SceneContext): void {
     const r = ctx.renderer;
-    const { shapes } = r;
 
     r.beginLayer('world');
-    this.renderTerrain(ctx);
-    this.renderStructures(ctx);
+    this.renderWorld(ctx);
     r.beginLayer('effects');
-    this.particles.render(shapes);
+    this.particles.render(r.shapes);
     r.beginLayer('ui');
     this.renderHud(ctx);
     r.endLayer();
   }
 
-  private renderTerrain(ctx: SceneContext): void {
+  /**
+   * One pass over the island in painter order.
+   *
+   * Terrain, props, and buildings are interleaved by diagonal rather than
+   * drawn in three separate passes, because a tree on tile (5,5) has to come
+   * after the terrain of (5,5) and before the terrain of (6,6). Three passes
+   * would put every tree either behind every hill or in front of every hill,
+   * and both look broken.
+   */
+  private renderWorld(ctx: SceneContext): void {
     const { shapes, camera } = ctx.renderer;
-    const view = camera.visibleBounds(DEFAULT_ISO.tileW * 2 + MAX_HEIGHT * DEFAULT_ISO.elevation);
+    const pad = DEFAULT_ISO.tileW * 2 + MAX_HEIGHT * DEFAULT_ISO.elevation + 80;
+    const view = camera.visibleBounds(pad);
 
-    // Painter order for an isometric grid is simply increasing (gx + gy), so
-    // walking diagonals gives a correct back-to-front sort with no sorting.
-    for (let sum = 0; sum <= (MAP_SIZE - 1) * 2; sum++) {
+    let propIndex = 0;
+    let structIndex = 0;
+    const maxSum = (MAP_SIZE - 1) * 2;
+
+    for (let sum = 0; sum <= maxSum; sum++) {
       const startX = Math.max(0, sum - (MAP_SIZE - 1));
       const endX = Math.min(MAP_SIZE - 1, sum);
+
       for (let gx = startX; gx <= endX; gx++) {
         const gy = sum - gx;
         const tile = this.tiles[gy * MAP_SIZE + gx]!;
-        if (tile.height === 0) continue;
-
         const screen = gridToScreen({ gx, gy, h: 0 }, DEFAULT_ISO);
         if (
           screen.x < view.minX || screen.x > view.maxX ||
@@ -285,192 +474,169 @@ export class WorldScene implements Scene {
         }
 
         const hovered = gx === this.hoverGx && gy === this.hoverGy;
-        const color = hovered ? shadeRgb(tile.color, 1.9) : tile.color;
 
-        shapes.isoBlock({ gx, gy, h: 0 }, tile.height, color, 1, 0, DEFAULT_ISO);
-
-        if (tile.trace) {
-          // A lit seam across the top face, running with the diagonal.
-          const top = gridToScreen({ gx, gy, h: tile.height }, DEFAULT_ISO);
-          shapes.line(
-            top.x - DEFAULT_ISO.tileW * 0.5, top.y,
-            top.x + DEFAULT_ISO.tileW * 0.5, top.y,
-            1.6, PALETTE.glowCyan, 0.55, 1.3,
+        if (tile.terrain === 'water') {
+          drawWaterTile(shapes, { gx, gy, h: 0 }, this.time, tile.shore);
+        } else {
+          const base = hovered ? mix(tile.color, PALETTE.sparkle, 0.32) : tile.color;
+          const f = faceColors(base);
+          shapes.isoBlockFaces(
+            { gx, gy, h: 0 }, tile.height, f.top, f.right, f.left, 1, 0, DEFAULT_ISO,
           );
-        }
-
-        if (hovered) {
-          shapes.isoBlockTrim(
-            { gx, gy, h: 0 }, tile.height, 2.5, PALETTE.glowCyan, 1, 3, DEFAULT_ISO,
-          );
+          if (tile.path) drawPathTile(shapes, { gx, gy, h: tile.height }, gx * 7.3 + gy * 3.1);
         }
       }
-    }
-  }
 
-  /**
-   * Light bands wrapping the two visible faces of a tower.
-   *
-   * Deliberately not `isoBlockTrim`: tracing the full diamond at every floor
-   * draws the two hidden edges too, and a stack of complete outlines reads as
-   * a pile of rings rather than as a building with lit floors. Only the front
-   * two edges are ever visible on an isometric block, so only those are drawn.
-   */
-  private drawFaceBands(
-    base: { gx: number; gy: number; h: number },
-    lift: number,
-    inset: number,
-    color: number,
-    alpha: number,
-    emissive: number,
-    shapes: SceneContext['renderer']['shapes'],
-  ): void {
-    const c = gridToScreen(base, DEFAULT_ISO);
-    const hw = DEFAULT_ISO.tileW * 0.5 - inset;
-    const hh = DEFAULT_ISO.tileH * 0.5 - inset * 0.5;
-    shapes.line(c.x - hw, c.y - lift, c.x, c.y + hh - lift, 1.4, color, alpha, emissive);
-    shapes.line(c.x, c.y + hh - lift, c.x + hw, c.y - lift, 1.4, color, alpha, emissive * 1.25);
-  }
-
-  private renderStructures(ctx: SceneContext): void {
-    const { shapes, quads } = ctx.renderer;
-    const iso = DEFAULT_ISO;
-
-    for (const s of this.structures) {
-      const tile = this.tiles[s.gy * MAP_SIZE + s.gx]!;
-      const base = { gx: s.gx, gy: s.gy, h: tile.height };
-      const color = TYPES[s.type].color;
-      const pulse = 0.6 + 0.4 * Math.sin(this.time * 1.5 + s.phase);
-
-      // Plinth: a short, wide, unlit slab. Towers that rise straight out of
-      // the ground look pasted on; a base course grounds them.
-      shapes.isoBlock(base, 0.4, PALETTE.panelDark, 1, 0, iso, 3);
-
-      // Body, inset so the plinth shows as a ledge around it.
-      const bodyBase = { gx: s.gx, gy: s.gy, h: tile.height + 0.4 };
-      shapes.isoBlock(bodyBase, s.height, typeFill(s.type), 1, 0.05, iso, 9);
-
-      // Lit floors up the two visible faces.
-      const floors = Math.max(2, Math.round(s.height * 1.6));
-      for (let i = 1; i <= floors; i++) {
-        const t = i / (floors + 1);
-        this.drawFaceBands(
-          bodyBase,
-          t * s.height * iso.elevation,
-          9,
-          color,
-          0.30 + 0.22 * pulse,
-          0.9 + pulse * 0.5,
+      while (propIndex < this.props.length && this.props[propIndex]!.depth < sum + 1) {
+        this.drawProp(shapes, this.props[propIndex]!);
+        propIndex++;
+      }
+      while (
+        structIndex < this.structures.length &&
+        this.structures[structIndex]!.gx + this.structures[structIndex]!.gy <= sum
+      ) {
+        const s = this.structures[structIndex]!;
+        const tile = this.tiles[s.gy * MAP_SIZE + s.gx]!;
+        drawBuilding(shapes, { gx: s.gx, gy: s.gy, h: tile.height }, s.style, this.time);
+        structIndex++;
+      }
+      if (this.hallAt.gx + this.hallAt.gy === sum) {
+        const tile = this.tiles[this.hallAt.gy * MAP_SIZE + this.hallAt.gx]!;
+        drawMainHall(
           shapes,
+          { gx: this.hallAt.gx, gy: this.hallAt.gy, h: tile.height },
+          8,
+          this.time,
         );
       }
-
-      // Roof: a bright cap plus the full outline. This is the one place the
-      // complete diamond belongs, because it terminates the silhouette.
-      const roof = { gx: s.gx, gy: s.gy, h: tile.height + 0.4 + s.height };
-      shapes.isoTile(roof, color, 0.85, 1.5 + pulse * 0.8, iso, 9);
-      shapes.isoTileOutline(roof, 1.6, color, 1, 2.2 + pulse, iso);
-
-      // Mast and beacon.
-      const top = gridToScreen(roof, iso);
-      const mastH = 12 + s.height * 2;
-      shapes.line(top.x, top.y, top.x, top.y - mastH, 1.4, PALETTE.steelLight, 0.9, 0.2);
-      shapes.circle(top.x, top.y - mastH, 2.2 + pulse * 1.4, color, 1, 3.0, 10);
-      shapes.ring(top.x, top.y - mastH, 7 + pulse * 6, 1, color, 0.30 * pulse, 1.8, 18);
-
-      // Label plate.
-      const label = s.label;
-      const width = this.font.measure(label) * 0.8;
-      const lx = top.x;
-      const ly = top.y - mastH - 26;
-      shapes.rect(lx - width / 2 - 6, ly - 3, width + 12, 16, PALETTE.voidDeep, 0.8, 0);
-      shapes.line(lx - width / 2 - 6, ly + 13, lx + width / 2 + 6, ly + 13, 1.2, color, 0.85, 1.5);
-      drawText(quads, this.font, label, lx, ly, {
-        scale: 0.8,
-        color,
-        align: 'center',
-        emissive: 1.2,
-        letterSpacing: 1.1,
-      });
     }
   }
+
+  private drawProp(shapes: SceneContext['renderer']['shapes'], prop: Prop): void {
+    switch (prop.kind) {
+      case 'tree':
+        drawTree(shapes, prop.anchor);
+        break;
+      case 'pine':
+        drawPine(shapes, prop.anchor);
+        break;
+      case 'bush':
+        drawBush(shapes, prop.anchor);
+        break;
+      case 'rock':
+        drawRock(shapes, prop.anchor);
+        break;
+      case 'flowers':
+        drawFlowers(shapes, prop.anchor);
+        break;
+      case 'tuft':
+        drawGrassTuft(shapes, prop.anchor);
+        break;
+    }
+  }
+
+  // ------------------------------------------------------------------- HUD
 
   private renderHud(ctx: SceneContext): void {
     const { shapes, quads } = ctx.renderer;
     const { width, height } = ctx.renderer.ctx;
-    const stats = ctx.renderer.stats();
-    const loopStats = { fps: 0 };
-    void loopStats;
 
-    // Top bar
-    shapes.rect(0, 0, width, 42, PALETTE.voidDeep, 0.82, 0);
-    shapes.line(0, 42, width, 42, 1, PALETTE.steel, 0.8, 0.6);
-    drawText(quads, this.font, 'STACKMON', 18, 13, {
-      color: PALETTE.glowCyan,
-      emissive: 1.8,
-      letterSpacing: 3.5,
-      scale: 1.05,
+    // Title card
+    shapes.roundedRect(14, 14, 236, 48, 13, PALETTE.uiShadow, 0.18, 0);
+    shapes.roundedRect(14, 11, 236, 48, 13, PALETTE.uiPanel, 0.97, 0);
+    shapes.roundedRect(14, 11, 6, 48, 3, PALETTE.typeInfra, 1, 0);
+    drawText(quads, this.font, 'STACKMON', 34, 20, {
+      color: PALETTE.ink,
+      letterSpacing: 3,
     });
-    drawText(quads, this.font, 'THE DISTRIBUTED REALM', 132, 15, {
-      color: PALETTE.inkFaint,
-      scale: 0.78,
-      letterSpacing: 2,
+    drawText(quads, this.fontSmall, 'THE DISTRIBUTED REALM', 35, 42, {
+      color: PALETTE.inkSoft,
+      letterSpacing: 1.6,
     });
 
-    // Type legend, bottom left
-    let ly = height - 26;
-    for (let i = TYPE_IDS.length - 1; i >= 0; i--) {
-      const t = TYPES[TYPE_IDS[i]!];
-      shapes.rect(18, ly + 1, 9, 9, t.color, 1, 1.8);
-      drawText(quads, this.font, t.label, 34, ly - 1, {
-        color: PALETTE.inkDim,
-        scale: 0.76,
-        letterSpacing: 1.4,
-      });
-      ly -= 16;
-    }
-
-    // Diagnostics, bottom right
-    const diag = [
-      `${stats.drawCalls} draw calls`,
-      `${Math.round(stats.triangles)} tris`,
-      `${this.particles.liveCount} particles`,
-      `zoom ${ctx.renderer.camera.zoom.toFixed(2)}x`,
-    ];
-    let dy = height - 26;
-    for (let i = diag.length - 1; i >= 0; i--) {
-      drawText(quads, this.font, diag[i]!, width - 18, dy, {
-        color: PALETTE.inkFaint,
-        scale: 0.72,
-        align: 'right',
-      });
-      dy -= 14;
+    // Family legend
+    const legendW = 84 + TYPE_IDS.length * 42;
+    const legendY = height - 62;
+    shapes.roundedRect(14, legendY + 3, legendW, 50, 14, PALETTE.uiShadow, 0.16, 0);
+    shapes.roundedRect(14, legendY, legendW, 50, 14, PALETTE.uiPanel, 0.96, 0);
+    drawText(quads, this.fontSmall, 'FAMILIES', 30, legendY + 19, {
+      color: PALETTE.inkSoft,
+      letterSpacing: 1.4,
+    });
+    for (let i = 0; i < TYPE_IDS.length; i++) {
+      const t = TYPE_IDS[i]!;
+      drawIconBadge(shapes, TECH_BY_TYPE[t][0]![0], 104 + i * 42, legendY + 25, 15, t);
     }
 
     // Hover readout
     if (this.hoverGx >= 0) {
       const tile = this.tiles[this.hoverGy * MAP_SIZE + this.hoverGx]!;
-      const text = `TILE ${this.hoverGx},${this.hoverGy}  ELEV ${tile.height}`;
-      const w = this.font.measure(text) * 0.8 + 20;
-      shapes.rect(width / 2 - w / 2, height - 44, w, 22, PALETTE.panelDark, 0.88, 0);
-      shapes.line(
-        width / 2 - w / 2, height - 44, width / 2 + w / 2, height - 44,
-        1.5, PALETTE.glowCyan, 0.9, 1.6,
-      );
-      drawText(quads, this.font, text, width / 2, height - 39, {
+      const struct = this.structures.find((s) => s.gx === this.hoverGx && s.gy === this.hoverGy);
+      const title = struct ? struct.label : tile.terrain.toUpperCase();
+      const sub = struct
+        ? 'Technology outpost'
+        : `Elevation ${tile.height}${tile.path ? ' - path' : ''}`;
+
+      const w = Math.max(this.font.measure(title), this.fontSmall.measure(sub)) + 44;
+      const x = width / 2 - w / 2;
+      shapes.roundedRect(x, height - 75, w, 52, 13, PALETTE.uiShadow, 0.2, 0);
+      shapes.roundedRect(x, height - 78, w, 52, 13, PALETTE.uiPanel, 0.97, 0);
+      if (struct) shapes.roundedRect(x, height - 78, w, 6, 3, TYPE_COLORS[struct.style.type], 1, 0);
+      drawText(quads, this.font, title, width / 2, height - 66, {
         color: PALETTE.ink,
-        scale: 0.8,
         align: 'center',
-        letterSpacing: 1.2,
+        letterSpacing: 1.4,
+      });
+      drawText(quads, this.fontSmall, sub, width / 2, height - 46, {
+        color: PALETTE.inkSoft,
+        align: 'center',
       });
     }
 
-    // Controls hint
+    // Diagnostics
+    const stats = ctx.renderer.stats();
+    const diag = [
+      `${stats.drawCalls} draw calls`,
+      `${Math.round(stats.triangles)} tris`,
+      `${this.props.length} props`,
+      `zoom ${ctx.renderer.camera.zoom.toFixed(2)}x`,
+    ];
+    let dy = height - 26;
+    for (let i = diag.length - 1; i >= 0; i--) {
+      drawText(quads, this.fontSmall, diag[i]!, width - 18, dy, {
+        color: PALETTE.uiPanel,
+        alpha: 0.85,
+        scale: 0.92,
+        align: 'right',
+      });
+      dy -= 14;
+    }
+
     drawText(
-      quads, this.font,
-      'WASD / drag to pan     scroll to zoom     click to ping',
-      18, height - 128,
-      { color: PALETTE.inkFaint, scale: 0.72, letterSpacing: 0.8 },
+      quads,
+      this.fontSmall,
+      'WASD or drag to pan     scroll to zoom',
+      width / 2,
+      22,
+      { color: PALETTE.uiPanel, alpha: 0.92, align: 'center', letterSpacing: 1 },
     );
+  }
+}
+
+/** Per-tile colour: terrain base, shifted by elevation and a noise jitter. */
+function tileColor(terrain: Terrain, height: number, jitter: number): number {
+  switch (terrain) {
+    case 'water':
+      return PALETTE.water;
+    case 'sand':
+      return mix(PALETTE.sand, PALETTE.sandDeep, jitter * 0.55);
+    case 'rock':
+      return mix(PALETTE.cliff, PALETTE.cliffDeep, jitter * 0.6);
+    default: {
+      // Higher meadow is paler and yellower, like sun-dried grass.
+      const alt = Math.min(1, (height - 1) / (MAX_HEIGHT - 2));
+      const base = mix(PALETTE.grass, PALETTE.grassLight, alt * 0.45);
+      return shade(mix(base, PALETTE.grassDeep, jitter * 0.5), (jitter - 0.5) * 0.1);
+    }
   }
 }

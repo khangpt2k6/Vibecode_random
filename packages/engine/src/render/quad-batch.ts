@@ -76,6 +76,20 @@ export class QuadBatch {
   /** See the note in ShapeBatch: flush must bind its own program. */
   private projection = new Float32Array(9);
 
+  /**
+   * Called right before this batch issues a draw, so a sibling batch can
+   * flush whatever it has pending first.
+   *
+   * Without this, submission order and draw order diverge: a batch that
+   * flushes mid-stream (on a texture change, or when it fills) draws ahead of
+   * a sibling that only flushes at the end of the layer. In practice that
+   * meant every UI panel was painted over the text that had been submitted
+   * before it, because the text batch flushed on its second font and the
+   * shape batch did not flush until the layer closed.
+   */
+  beforeFlush: (() => void) | null = null;
+  private flushing = false;
+
   drawCalls = 0;
   quadsDrawn = 0;
 
@@ -211,7 +225,13 @@ export class QuadBatch {
   }
 
   flush(): void {
-    if (this.quadCount === 0 || !this.currentTexture) return;
+    if (this.quadCount === 0 || !this.currentTexture || this.flushing) return;
+    this.flushing = true;
+    try {
+      this.beforeFlush?.();
+    } finally {
+      this.flushing = false;
+    }
     const gl = this.gl;
 
     this.shader.use();

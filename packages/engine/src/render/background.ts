@@ -2,16 +2,17 @@ import { Shader } from './shader.js';
 import { FullscreenPass } from './post/fullscreen.js';
 
 /**
- * Animated circuit-grid backdrop.
+ * Sky backdrop.
  *
- * Drawn before the world, in one fullscreen pass, entirely in the fragment
- * shader. There is no geometry and no texture, so it costs one pass no matter
- * how far the player zooms out.
+ * One fullscreen pass: a vertical gradient, drifting clouds, and a soft sun
+ * glow. No geometry and no textures, so it costs the same whether the player
+ * is zoomed into one tile or looking at the whole island.
  *
- * It scrolls and scales with the camera, which is the whole point: a static
- * backdrop behind a moving isometric world immediately reads as a cheap
- * parallax cheat. Tying it to camera world-space instead means the grid is
- * part of the same place the player is standing in.
+ * The clouds scroll with the camera at a fraction of its speed. Parallax is
+ * the cheapest possible depth cue and the difference between a sky and a
+ * coloured rectangle, but it has to be gentle - clouds that track the camera
+ * one-to-one look pinned to the screen, and clouds that ignore it entirely
+ * make the world feel like it is sliding around underneath a poster.
  */
 
 const BACKGROUND_FRAG = `#version 300 es
@@ -20,17 +21,15 @@ precision highp float;
 in vec2 vUV;
 
 uniform vec2  uResolution;
-uniform vec2  uCamera;     // camera centre in world pixels
+uniform vec2  uCamera;
 uniform float uZoom;
 uniform float uTime;
-uniform vec3  uColorDeep;  // furthest back
-uniform vec3  uColorGrid;
-uniform vec3  uColorTrace; // the bright pulses
+uniform vec3  uSkyTop;
+uniform vec3  uSkyMid;
+uniform vec3  uSkyLow;
+uniform vec3  uCloud;
 uniform float uIntensity;
 
-// Two outputs, because the scene target this draws into has two attachments.
-// A fullscreen pass that declares only one leaves the second undefined, and
-// the emissive buffer then feeds the bloom whatever was left in memory.
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outEmissive;
 
@@ -40,77 +39,80 @@ float hash21(vec2 p) {
   return fract(p.x * p.y);
 }
 
-// One layer of grid lines, in world units, anti-aliased via fwidth so the
-// lines stay one pixel wide at every zoom instead of aliasing into moire.
-float gridLines(vec2 world, float spacing, float thickness) {
-  vec2 g = abs(fract(world / spacing - 0.5) - 0.5) / fwidth(world / spacing);
-  float line = min(g.x, g.y);
-  return 1.0 - smoothstep(0.0, thickness, line);
+float valueNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p) {
+  float sum = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 5; i++) {
+    sum += valueNoise(p) * amp;
+    p *= 2.03;
+    amp *= 0.5;
+  }
+  return sum;
 }
 
 void main() {
-  vec2 pixel = (vUV - 0.5) * uResolution;
-  vec2 world = pixel / uZoom + uCamera;
+  vec2 uv = vUV;
 
-  vec3 color = uColorDeep;
-  vec3 glow = vec3(0.0);
+  // Two-stop gradient: deeper blue overhead, pale at the horizon. Three
+  // stops rather than two because a linear blue-to-white ramp reads as a
+  // gradient tool, and the extra midpoint reads as air.
+  vec3 sky = mix(uSkyLow, uSkyMid, smoothstep(0.0, 0.62, uv.y));
+  sky = mix(sky, uSkyTop, smoothstep(0.45, 1.0, uv.y));
 
-  // Two grid scales: a fine one that fades out when zoomed far out, and a
-  // coarse one that carries the structure at every distance.
-  float fine = gridLines(world, 128.0, 1.3);
-  float coarse = gridLines(world, 512.0, 1.7);
-  float fineFade = smoothstep(0.14, 0.42, uZoom);
+  // Sun glow in the upper left, which is where every surface in the world is
+  // shaded as if the light were coming from.
+  vec2 sunPos = vec2(0.22, 0.86);
+  float sunDist = distance(vec2(uv.x, uv.y * (uResolution.y / uResolution.x)),
+                           vec2(sunPos.x, sunPos.y * (uResolution.y / uResolution.x)));
+  sky += vec3(1.0, 0.93, 0.72) * (1.0 - smoothstep(0.0, 0.55, sunDist)) * 0.30;
 
-  color = mix(color, uColorGrid, fine * 0.34 * fineFade);
-  color = mix(color, uColorGrid, coarse * 0.55);
+  // Clouds. Camera parallax at a fraction of world speed, plus a slow drift
+  // of their own so the sky is alive when the camera is parked.
+  vec2 cloudUV = uv * vec2(uResolution.x / uResolution.y, 1.0) * 1.6;
+  cloudUV += uCamera * 0.00018;
+  cloudUV.x += uTime * 0.006;
 
-  // Node dots where the coarse lines cross. Junctions give the grid a sense
-  // of being a circuit rather than graph paper.
-  vec2 toNode = abs(fract(world / 512.0 - 0.5) - 0.5) * 512.0;
-  float node = 1.0 - smoothstep(2.0, 5.0, length(toNode));
-  color = mix(color, uColorTrace, node * 0.30);
-  glow += uColorTrace * node * 0.35;
+  float far = fbm(cloudUV * 1.1 + vec2(0.0, 0.3));
+  float near = fbm(cloudUV * 2.3 - vec2(uTime * 0.004, 0.0));
 
-  // Data pulses: pick a cell, give it a phase, run a bright dash along its
-  // row. Sparse on purpose - constant motion everywhere is exhausting to
-  // look at for the hours this game expects.
-  vec2 cell = floor(world / 512.0);
-  float seed = hash21(cell);
-  if (seed > 0.72) {
-    float phase = fract(uTime * 0.18 + seed * 7.31);
-    vec2 local = fract(world / 512.0);
-    float along = seed > 0.9 ? local.x : local.y;
-    float across = seed > 0.9 ? local.y : local.x;
+  // Clouds live in the upper part of the sky and thin out toward the horizon.
+  float band = smoothstep(0.18, 0.72, uv.y);
+  float farMask = smoothstep(0.56, 0.78, far) * band * 0.55;
+  float nearMask = smoothstep(0.62, 0.84, near) * band * 0.85;
 
-    float head = 1.0 - smoothstep(0.0, 0.10, abs(along - phase));
-    float onLine = 1.0 - smoothstep(0.0, 0.012, abs(across - 0.5));
-    vec3 pulse = uColorTrace * head * onLine;
-    color += pulse * 0.9;
-    glow += pulse * 1.5;
-  }
+  sky = mix(sky, uCloud * 0.94, farMask);
+  sky = mix(sky, uCloud, nearMask);
 
-  // Slow vertical drift, so the backdrop is never completely still even when
-  // the camera is parked.
-  float breathe = 0.94 + 0.06 * sin(uTime * 0.35 + world.y * 0.0006);
-  color *= breathe;
-
-  color *= uIntensity;
-  outColor = vec4(color, 1.0);
-  // Only the pulses and junction nodes glow; the grid itself must not, or the
-  // whole backdrop turns into a light source and swallows the world on it.
-  outEmissive = vec4(glow * uIntensity, 1.0);
+  outColor = vec4(sky * uIntensity, 1.0);
+  // Only the sun disc region blooms. Clouds that glow look like they are on
+  // fire, which is not the weather this game is set in.
+  float sunCore = 1.0 - smoothstep(0.0, 0.16, sunDist);
+  outEmissive = vec4(vec3(1.0, 0.95, 0.78) * sunCore * 0.85, 1.0);
 }`;
 
 export interface BackgroundColors {
-  deep: number;
-  grid: number;
-  trace: number;
+  skyTop: number;
+  skyMid: number;
+  skyLow: number;
+  cloud: number;
 }
 
 export const DEFAULT_BACKGROUND: BackgroundColors = {
-  deep: 0x070c1a,
-  grid: 0x31497c,
-  trace: 0x4de0ff,
+  skyTop: 0x4fbcf0,
+  skyMid: 0x93dcfa,
+  skyLow: 0xd9f4ff,
+  cloud: 0xffffff,
 };
 
 export class BackgroundPass {
@@ -122,7 +124,7 @@ export class BackgroundPass {
     _gl: WebGL2RenderingContext,
     private readonly fullscreen: FullscreenPass,
   ) {
-    this.shader = fullscreen.makeShader(BACKGROUND_FRAG, 'background');
+    this.shader = fullscreen.makeShader(BACKGROUND_FRAG, 'sky');
   }
 
   render(
@@ -139,9 +141,10 @@ export class BackgroundPass {
       s.setFloat('uZoom', zoom);
       s.setFloat('uTime', time);
       s.setFloat('uIntensity', this.intensity);
-      setRgb(s, 'uColorDeep', this.colors.deep);
-      setRgb(s, 'uColorGrid', this.colors.grid);
-      setRgb(s, 'uColorTrace', this.colors.trace);
+      setRgb(s, 'uSkyTop', this.colors.skyTop);
+      setRgb(s, 'uSkyMid', this.colors.skyMid);
+      setRgb(s, 'uSkyLow', this.colors.skyLow);
+      setRgb(s, 'uCloud', this.colors.cloud);
     });
   }
 

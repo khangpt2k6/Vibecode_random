@@ -82,6 +82,13 @@ export class Renderer {
 
     this.shapes = new ShapeBatch(this.gl);
     this.quads = new QuadBatch(this.gl);
+
+    // Keep draw order equal to submission order across both batches. Either
+    // one can flush mid-layer - the shape batch when it fills, the quad batch
+    // on every texture change - and whichever does must let the other catch
+    // up first, or work submitted earlier ends up painted on top.
+    this.shapes.beforeFlush = () => this.quads.flush();
+    this.quads.beforeFlush = () => this.shapes.flush();
   }
 
   /** Call each frame before drawing. Returns true if the size changed. */
@@ -167,9 +174,8 @@ export class Renderer {
 
   endLayer(): void {
     if (this.currentLayer === null) return;
-    // Shapes first, then quads: within a layer, text and icons should land on
-    // top of the panels they belong to without every caller having to think
-    // about it.
+    // Order within a layer is submission order, maintained by the mutual
+    // beforeFlush hooks, so these two calls just drain whatever is left.
     this.shapes.end();
     this.quads.end();
     this.currentLayer = null;
