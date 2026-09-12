@@ -8,9 +8,27 @@ import type { Vec2 } from '../math/vec2.js';
  * simulation step, which matters because a key tapped and released between
  * two ticks must still register exactly once.
  *
- * `pressed` and `released` are edge states valid for exactly one simulation
- * tick after the event, which is what `endFrame` clears.
+ * `pressed` and `released` are edge states. An edge is delivered to exactly
+ * one simulation tick and to the render that follows it, then cleared.
+ *
+ * "Exactly one tick" is load bearing. A frame that has fallen behind runs
+ * several catch-up ticks, and an edge visible to all of them fires whatever
+ * it is bound to several times - a toggle bound to a keypress opened and
+ * immediately closed itself, apparently at random, depending only on how far
+ * behind the accumulator happened to be. The phase below is how that is
+ * prevented without hiding edges from the immediate-mode UI, which hit-tests
+ * during render and genuinely does need to see the click.
  */
+
+/**
+ * What the engine is doing right now.
+ *
+ * `update-first` is the first simulation tick of a frame, `update-repeat` any
+ * catch-up tick after it, and `render` the draw that follows. Edges are
+ * reported during `update-first` and `render`, and suppressed during
+ * `update-repeat`.
+ */
+export type InputPhase = 'update-first' | 'update-repeat' | 'render';
 
 export interface PointerState {
   /** Position in CSS pixels relative to the canvas. */
@@ -46,9 +64,20 @@ export class Input {
   private rightPressed = false;
 
   private readonly detach: Array<() => void> = [];
+  private phase: InputPhase = 'update-first';
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.attach();
+  }
+
+  /** Set by the app around each tick and each draw. */
+  setPhase(phase: InputPhase): void {
+    this.phase = phase;
+  }
+
+  /** False during catch-up ticks, so an edge fires once per frame. */
+  private get edgesVisible(): boolean {
+    return this.phase !== 'update-repeat';
   }
 
   private attach(): void {
@@ -160,15 +189,15 @@ export class Input {
   }
 
   wasPressed(code: string): boolean {
-    return this.pressedKeys.has(code);
+    return this.edgesVisible && this.pressedKeys.has(code);
   }
 
   wasReleased(code: string): boolean {
-    return this.releasedKeys.has(code);
+    return this.edgesVisible && this.releasedKeys.has(code);
   }
 
   anyPressed(): boolean {
-    return this.pressedKeys.size > 0;
+    return this.edgesVisible && this.pressedKeys.size > 0;
   }
 
   /** Characters typed this tick, plus \b for each backspace. */
@@ -192,12 +221,13 @@ export class Input {
   // ---- pointer ----
 
   get pointer(): PointerState {
+    const edges = this.edgesVisible;
     return {
       position: this.pointerPos,
       delta: this.pointerDelta,
       down: this.pointerDown,
-      pressed: this.pointerPressed,
-      released: this.pointerReleased,
+      pressed: edges && this.pointerPressed,
+      released: edges && this.pointerReleased,
       wheel: this.wheelDelta,
       dragging: this.pointerDragging,
     };
@@ -208,7 +238,7 @@ export class Input {
   }
 
   get rightMousePressed(): boolean {
-    return this.rightPressed;
+    return this.edgesVisible && this.rightPressed;
   }
 
   /**
@@ -216,7 +246,7 @@ export class Input {
    * opposed to the end of a camera pan. UI should use this, never `released`.
    */
   get clicked(): boolean {
-    return this.pointerReleased && !this.pointerDragging;
+    return this.edgesVisible && this.pointerReleased && !this.pointerDragging;
   }
 
   /** Clear per-tick edge state. Call once at the end of each simulation tick. */

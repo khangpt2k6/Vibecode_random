@@ -1,5 +1,6 @@
 import type { Renderer } from '../render/renderer.js';
 import type { Input } from '../input/input.js';
+import { Transition, type TransitionOptions } from './transition.js';
 
 /**
  * A scene is one screen of the game: the overworld, a battle, the base
@@ -40,6 +41,8 @@ export interface Scene {
 }
 
 export class SceneManager {
+  /** Covers the moment of a scene swap. Drawn by the app, over everything. */
+  readonly transition = new Transition();
   private readonly stack: Scene[] = [];
   private ctx!: SceneContext;
   /** Deferred so a scene can safely push or pop from inside its own update. */
@@ -56,6 +59,19 @@ export class SceneManager {
 
   get depth(): number {
     return this.stack.length;
+  }
+
+  /** Push behind a fade. The swap happens while the screen is covered. */
+  pushWith(scene: Scene, opts?: TransitionOptions): void {
+    this.transition.start(() => this.push(scene), opts);
+  }
+
+  popWith(opts?: TransitionOptions): void {
+    this.transition.start(() => this.pop(), opts);
+  }
+
+  replaceWith(scene: Scene, opts?: TransitionOptions): void {
+    this.transition.start(() => this.replace(scene), opts);
   }
 
   push(scene: Scene): void {
@@ -91,6 +107,7 @@ export class SceneManager {
   }
 
   update(dt: number): void {
+    this.transition.update(dt);
     this.drainPending();
     if (this.transitioning) return;
 

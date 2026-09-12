@@ -32,6 +32,7 @@ import {
   type PropAnchor,
 } from '../art/nature.js';
 import { drawBuilding, drawMainHall, type BuildingStyle } from '../art/buildings.js';
+import { drawCrop, drawEmptyPlot, drawPlotBase, drawScaffold } from '../art/farm.js';
 import { drawIconBadge } from '../art/icons.js';
 import { drawCreature, drawNamePlate, type CreatureVisual } from '../art/creatures.js';
 import { BattleScene } from './battle-scene.js';
@@ -40,12 +41,32 @@ import {
   applyBattle,
   attemptCapture,
   battleLineup,
+  buildProgress,
   captureChance,
   captureCost,
+  growth,
+  harvest,
+  isReady,
   owns,
+  plant,
+  rushBuild,
+  startBuild,
+  syncPlots,
+  tickBuild,
   type PlayerState,
 } from '@stackmon/core';
+import { getBuilding, getCrop } from '@stackmon/content';
 import { savePlayer } from '../state/save.js';
+import type { UIContext } from '../ui/widgets.js';
+import {
+  drawBuildMenu,
+  drawHelp,
+  drawNudges,
+  drawObjective,
+  drawPlantMenu,
+  drawResourceBar,
+  drawToolbar,
+} from '../ui/world-hud.js';
 
 /**
  * The overworld.
@@ -167,8 +188,13 @@ export class WorldScene implements Scene {
 
   private hoverGx = -1;
   private hoverGy = -1;
-  /** Dev overlay: every creature body in a grid, toggled with G. */
-  private showGallery = false;
+  /** Which full-screen overlay is open, if any. */
+  private overlay: 'none' | 'codex' | 'build' | 'help' | 'plant' = 'none';
+  /** Plot the plant menu is choosing a crop for. */
+  private plantingPlot = -1;
+  /** Grid tiles the farm plots occupy, laid out around the Ops Centre. */
+  private plotTiles: Array<{ gx: number; gy: number }> = [];
+  private hoverPlot = -1;
   /** Labels collected during the world pass and drawn together at the end. */
   private pendingLabels: Array<{ x: number; y: number; text: string; type: TypeId }> = [];
 
@@ -185,6 +211,8 @@ export class WorldScene implements Scene {
     this.placeStructures();
     this.scatterProps();
     this.spawnWild();
+    syncPlots(this.player.base);
+    this.layoutPlots();
 
     ctx.renderer.camera.minZoom = 0.3;
     ctx.renderer.camera.maxZoom = 2.6;
@@ -240,7 +268,7 @@ export class WorldScene implements Scene {
       ...bench,
     ].map((m) => m.uid);
 
-    ctx.scenes.push(
+    ctx.scenes.pushWith(
       new BattleScene({
         setup: { lineup, bench, incidentId: incident.id, seed: `${p.seed}-battle-${p.clock}` },
         onFinish: (battle) => {
@@ -263,6 +291,7 @@ export class WorldScene implements Scene {
           });
         },
       }),
+      { style: 'iris', duration: 0.34 },
     );
   }
 
@@ -328,6 +357,70 @@ export class WorldScene implements Scene {
 
   private toast(x: number, y: number, text: string, color: number): void {
     this.toasts.push({ x, y, text, color, life: 2.6 });
+  }
+
+  /** Click a plot: harvest if ready, otherwise open the crop picker. */
+  private usePlot(index: number): void {
+    const plot = this.player.base.plots[index];
+    const tile = this.plotTile(index);
+    if (!plot || !tile) return;
+    const now = Date.now();
+    const pos = gridToScreen({ gx: tile.gx, gy: tile.gy, h: this.heightAt(tile.gx, tile.gy) }, DEFAULT_ISO);
+
+    if (isReady(plot, now)) {
+      const cropId = plot.cropId;
+      const result = harvest(this.player, this.player.base, plot.id, now);
+      if (result.ok && result.gained && cropId) {
+        const parts = Object.entries(result.gained).map(([k, v]) => `+${v} ${k}`);
+        this.toast(pos.x, pos.y - 44, parts.join('  '), PALETTE.good);
+        this.particles.emit({
+          x: pos.x, y: pos.y - 18, count: 18, color: getCrop(cropId).tint,
+          colorEnd: PALETTE.sparkle, speedMin: 30, speedMax: 110,
+          lifeMin: 0.35, lifeMax: 0.8, sizeMin: 2, sizeMax: 4,
+          gravity: 140, shape: 'spark', emissive: 1.3,
+        });
+        savePlayer(this.player);
+      }
+      return;
+    }
+
+    if (plot.cropId) {
+      const left = Math.max(0, Math.ceil((plot.readyAt - now) / 1000));
+      this.toast(pos.x, pos.y - 44, `${getCrop(plot.cropId).name}  -  ${left}s left`, PALETTE.info);
+      return;
+    }
+
+    this.plantingPlot = index;
+    this.overlay = 'plant';
+  }
+
+  private doPlant(cropId: string): void {
+    const plot = this.player.base.plots[this.plantingPlot];
+    const tile = this.plotTile(this.plantingPlot);
+    this.overlay = 'none';
+    if (!plot || !tile) return;
+
+    const result = plant(this.player, this.player.base, plot.id, cropId, Date.now());
+    const pos = gridToScreen({ gx: tile.gx, gy: tile.gy, h: this.heightAt(tile.gx, tile.gy) }, DEFAULT_ISO);
+    if (result.ok) {
+      this.toast(pos.x, pos.y - 44, `Planted ${getCrop(cropId).name}`, PALETTE.good);
+      savePlayer(this.player);
+    } else {
+      this.toast(pos.x, pos.y - 44, 'Not enough scrap', PALETTE.danger);
+    }
+  }
+
+  private doBuild(buildingId: string): void {
+    const result = startBuild(this.player, this.player.base, buildingId, Date.now());
+    const hall = gridToScreen({ gx: this.hallAt.gx, gy: this.hallAt.gy, h: 3 }, DEFAULT_ISO);
+    if (result.ok) {
+      this.toast(hall.x, hall.y - 70, `${getBuilding(buildingId).name} started`, PALETTE.good);
+      this.overlay = 'none';
+      savePlayer(this.player);
+    } else if (!result.ok && result.reason === 'cost') {
+      const parts = Object.entries(result.missing ?? {}).map(([k, v]) => `${v} ${k}`);
+      this.toast(hall.x, hall.y - 70, `Need ${parts.join(', ')}`, PALETTE.danger);
+    }
   }
 
   // ------------------------------------------------------------ generation
@@ -600,6 +693,49 @@ export class WorldScene implements Scene {
     }
   }
 
+  /**
+   * Where the farm plots sit.
+   *
+   * A ring of tiles spiralling out from the Ops Centre, skipping water,
+   * paths, buildings and anything not level with the plaza. Growing outward
+   * from the hall means the farm always reads as part of the settlement
+   * rather than as squares dropped somewhere on the map.
+   */
+  private layoutPlots(): void {
+    const { gx: hx, gy: hy } = this.hallAt;
+    const hallHeight = this.heightAt(hx, hy);
+    this.plotTiles = [];
+
+    for (let ring = 2; ring <= 9 && this.plotTiles.length < 40; ring++) {
+      for (let dx = -ring; dx <= ring && this.plotTiles.length < 40; dx++) {
+        for (let dy = -ring; dy <= ring; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+          const gx = hx + dx;
+          const gy = hy + dy;
+          const t = this.tiles[gy * MAP_SIZE + gx];
+          if (!t || t.terrain === 'water' || t.terrain === 'rock' || t.path) continue;
+          if (t.height !== hallHeight) continue;
+          if (this.structures.some((st) => st.gx === gx && st.gy === gy)) continue;
+          this.plotTiles.push({ gx, gy });
+          if (this.plotTiles.length >= 40) break;
+        }
+      }
+    }
+
+    // Plots are not scatter, so nothing decorative may stand on one.
+    const taken = new Set(this.plotTiles.map((t) => `${t.gx},${t.gy}`));
+    this.props = this.props.filter((prop) => {
+      const gx = Math.round(prop.anchor.gridX);
+      const gy = Math.round(prop.anchor.gridY);
+      return !taken.has(`${gx},${gy}`);
+    });
+  }
+
+  /** Screen-space tile for plot `index`, or null if the base has fewer plots. */
+  private plotTile(index: number): { gx: number; gy: number } | null {
+    return this.plotTiles[index] ?? null;
+  }
+
   /** A tile a creature can stand on: land, and level with its neighbours. */
   private walkable(gx: number, gy: number): boolean {
     const t = this.tiles[gy * MAP_SIZE + gx];
@@ -664,11 +800,29 @@ export class WorldScene implements Scene {
     const { camera } = ctx.renderer;
     const { input } = ctx;
 
+    if (input.wasPressed('KeyG')) this.overlay = this.overlay === 'codex' ? 'none' : 'codex';
+    if (input.wasPressed('KeyB')) this.overlay = this.overlay === 'build' ? 'none' : 'build';
+    if (input.wasPressed('KeyH')) this.overlay = this.overlay === 'help' ? 'none' : 'help';
+    if (input.wasPressed('Escape')) this.overlay = 'none';
+
+    // An overlay owns the pointer, and this guard has to come before anything
+    // that reads it. Sitting below the camera block meant dragging across an
+    // open menu still panned the world underneath it.
+    if (this.overlay !== 'none') {
+      this.hoverWild = null;
+      this.hoverPlot = -1;
+      this.hoverGx = -1;
+      this.updateWild(dt);
+      this.particles.update(dt);
+      return;
+    }
+
     const axis = input.axis();
     if (axis.x !== 0 || axis.y !== 0) {
       const speed = 480 / camera.zoom;
       camera.panBy(axis.x * speed * dt, axis.y * speed * dt);
     }
+
     if (input.pointer.dragging) {
       camera.panBy(-input.pointer.delta.x / camera.zoom, -input.pointer.delta.y / camera.zoom);
     }
@@ -676,7 +830,15 @@ export class WorldScene implements Scene {
       camera.zoomAt(input.pointer.position, Math.pow(0.999, input.pointer.wheel));
     }
 
-    if (input.wasPressed('KeyG')) this.showGallery = !this.showGallery;
+    // Construction finishes on wall-clock time, including while away.
+    if (tickBuild(this.player.base, Date.now())) {
+      syncPlots(this.player.base);
+      this.layoutPlots();
+      savePlayer(this.player);
+      const hall = gridToScreen({ gx: this.hallAt.gx, gy: this.hallAt.gy, h: 3 }, DEFAULT_ISO);
+      this.toast(hall.x, hall.y - 70, 'Construction complete', PALETTE.good);
+    }
+
 
     const world = camera.screenToWorld(input.pointer.position);
     const picked = screenToGridOnHeightmap(world, this.heightAt, MAX_HEIGHT, DEFAULT_ISO);
@@ -704,6 +866,18 @@ export class WorldScene implements Scene {
         bestDist = d;
         this.hoverWild = w;
       }
+    }
+
+    // Plots are picked by tile, since they are exactly one tile each.
+    this.hoverPlot = -1;
+    if (picked) {
+      const idx = this.plotTiles.findIndex((t) => t.gx === picked.gx && t.gy === picked.gy);
+      if (idx >= 0 && idx < this.player.base.plots.length) this.hoverPlot = idx;
+    }
+
+    if (input.clicked && this.hoverPlot >= 0) {
+      this.usePlot(this.hoverPlot);
+      return;
     }
 
     if (input.clicked && this.hoverWild) {
@@ -759,7 +933,7 @@ export class WorldScene implements Scene {
     this.particles.render(r.shapes);
     r.beginLayer('ui');
     this.renderHud(ctx);
-    if (this.showGallery) this.renderGallery(ctx);
+    this.renderOverlays(ctx);
     r.endLayer();
   }
 
@@ -813,6 +987,16 @@ export class WorldScene implements Scene {
           );
           if (tile.path) drawPathTile(shapes, { gx, gy, h: tile.height }, gx * 7.3 + gy * 3.1);
         }
+      }
+
+      // Plots sit on their tile, so they draw with that tile's diagonal.
+      for (let i = 0; i < this.plotTiles.length && i < this.player.base.plots.length; i++) {
+        const t = this.plotTiles[i]!;
+        if (t.gx + t.gy !== sum) continue;
+        this.drawPlot(shapes, i, t);
+      }
+      if (this.player.base.building && this.hallAt.gx + this.hallAt.gy + 2 === sum) {
+        this.drawConstruction(shapes);
       }
 
       while (propIndex < this.props.length && this.props[propIndex]!.depth < sum + 1) {
@@ -895,6 +1079,39 @@ export class WorldScene implements Scene {
     this.pendingLabels.length = 0;
   }
 
+  private drawPlot(
+    shapes: SceneContext['renderer']['shapes'], index: number, tile: { gx: number; gy: number },
+  ): void {
+    const plot = this.player.base.plots[index];
+    if (!plot) return;
+    const now = Date.now();
+    const p = { gx: tile.gx, gy: tile.gy, h: this.heightAt(tile.gx, tile.gy) };
+    const hovered = this.hoverPlot === index;
+
+    drawPlotBase(shapes, p, hovered);
+    if (plot.cropId) {
+      drawCrop(shapes, p, plot.cropId, growth(plot, now), isReady(plot, now), this.time);
+    } else {
+      drawEmptyPlot(shapes, p, hovered, this.time);
+    }
+  }
+
+  /** The structure currently going up, parked beside the Ops Centre. */
+  private drawConstruction(shapes: SceneContext['renderer']['shapes']): void {
+    const c = this.player.base.building;
+    if (!c) return;
+    const spec = getBuilding(c.buildingId);
+    const gx = this.hallAt.gx + 2;
+    const gy = this.hallAt.gy;
+    drawScaffold(
+      shapes,
+      { gx, gy, h: this.heightAt(gx, gy) },
+      buildProgress(this.player.base, Date.now()),
+      spec.tint,
+      this.time,
+    );
+  }
+
   private drawProp(shapes: SceneContext['renderer']['shapes'], prop: Prop): void {
     switch (prop.kind) {
       case 'tree':
@@ -915,6 +1132,43 @@ export class WorldScene implements Scene {
       case 'tuft':
         drawGrassTuft(shapes, prop.anchor);
         break;
+    }
+  }
+
+  /** Whichever full-screen panel is open, and whatever the player clicked in it. */
+  private renderOverlays(ctx: SceneContext): void {
+    if (this.overlay === 'none') return;
+    const { width, height } = ctx.renderer.ctx;
+    const ui: UIContext = {
+      shapes: ctx.renderer.shapes,
+      quads: ctx.renderer.quads,
+      input: ctx.input,
+      font: this.font,
+      fontSmall: this.fontSmall,
+      fontBig: this.font,
+      time: this.time,
+    };
+
+    switch (this.overlay) {
+      case 'codex':
+        this.renderGallery(ctx);
+        break;
+      case 'help':
+        if (drawHelp(ui, width, height)) this.overlay = 'none';
+        break;
+      case 'plant': {
+        const r = drawPlantMenu(ui, this.player, width, height);
+        if (r.close) this.overlay = 'none';
+        else if (r.crop) this.doPlant(r.crop);
+        break;
+      }
+      case 'build': {
+        const r = drawBuildMenu(ui, this.player, Date.now(), width, height);
+        if (r.close) this.overlay = 'none';
+        if (r.build) this.doBuild(r.build);
+        if (r.rush && rushBuild(this.player, this.player.base, Date.now())) savePlayer(this.player);
+        break;
+      }
     }
   }
 
@@ -987,33 +1241,26 @@ export class WorldScene implements Scene {
       letterSpacing: 1.6,
     });
 
-    // Family legend
-    const legendW = 84 + TYPE_IDS.length * 42;
-    const legendY = height - 62;
-    shapes.roundedRect(14, legendY + 3, legendW, 50, 14, PALETTE.uiShadow, 0.16, 0);
-    shapes.roundedRect(14, legendY, legendW, 50, 14, PALETTE.uiPanel, 0.96, 0);
-    drawText(quads, this.fontSmall, 'FAMILIES', 30, legendY + 19, {
-      color: PALETTE.inkSoft,
-      letterSpacing: 1.4,
-    });
-    for (let i = 0; i < TYPE_IDS.length; i++) {
-      const t = TYPE_IDS[i]!;
-      drawIconBadge(shapes, TECH_BY_TYPE[t][0]![0], 104 + i * 42, legendY + 25, 15, t);
-    }
-
-    // Resources and roster, top right.
+    const ui: UIContext = {
+      shapes,
+      quads,
+      input: ctx.input,
+      font: this.font,
+      fontSmall: this.fontSmall,
+      fontBig: this.font,
+      time: this.time,
+    };
     const p = this.player;
-    const resW = 300;
-    shapes.roundedRect(width - resW - 14, 14, resW, 48, 13, PALETTE.uiShadow, 0.18, 0);
-    shapes.roundedRect(width - resW - 14, 11, resW, 48, 13, PALETTE.uiPanel, 0.97, 0);
-    drawIconBadge(shapes, 'redis', width - resW + 8, 35, 13, 'cache');
-    drawText(quads, this.font, `${p.resources.scrap}`, width - resW + 30, 19, { color: PALETTE.ink });
-    drawText(quads, this.fontSmall, 'SCRAP', width - resW + 30, 40, { color: PALETTE.inkSoft, letterSpacing: 1.4 });
-    drawText(quads, this.font, `${p.roster.length}`, width - 150, 19, { color: PALETTE.ink });
-    drawText(quads, this.fontSmall, `ROSTER  -  ${p.seen.length}/24 SEEN`, width - 150, 40, {
-      color: PALETTE.inkSoft,
-      letterSpacing: 1.2,
-    });
+    const now = Date.now();
+
+    drawResourceBar(ui, p, width);
+    const objH = drawObjective(ui, p, now, 70);
+    drawNudges(ui, p, now, 70 + objH + 10);
+
+    const bar = drawToolbar(ui, height);
+    if (bar.openBuild) this.overlay = 'build';
+    if (bar.openCodex) this.overlay = 'codex';
+    if (bar.openHelp) this.overlay = 'help';
 
     // Toasts, projected from world space.
     for (const t of this.toasts) {

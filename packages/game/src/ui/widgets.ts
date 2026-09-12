@@ -26,6 +26,8 @@ export interface UIContext {
   input: Input;
   font: Font;
   fontSmall: Font;
+  /** Optional display face for headings. Falls back to `font`. */
+  fontBig?: Font;
   /** Seconds, for hover pulses. */
   time: number;
 }
@@ -111,7 +113,15 @@ export function meter(
 
 /** Word-wrapped paragraph. Returns the height used. */
 export function paragraph(
-  ui: UIContext, x: number, y: number, width: number, text: string, color = PALETTE.ink, scale = 1,
+  ui: UIContext,
+  x: number,
+  y: number,
+  width: number,
+  text: string,
+  // Annotated rather than inferred: PALETTE is `as const`, so a bare default
+  // would narrow this parameter to that one literal colour.
+  color: number = PALETTE.ink,
+  scale = 1,
 ): number {
   const lines = ui.fontSmall.wrap(text, width, scale);
   const lh = ui.fontSmall.lineHeight * scale;

@@ -22,11 +22,14 @@ export interface PropAnchor {
   seed: number;
   /** 0.6 to 1.4 or so. Varies size so a row of trees is not a row of clones. */
   scale: number;
+  /** The grid position this was placed from, kept so callers can filter by tile. */
+  gridX: number;
+  gridY: number;
 }
 
 export function anchorAt(p: GridPos, seed: number, scale = 1): PropAnchor {
   const s = gridToScreen(p, DEFAULT_ISO);
-  return { x: s.x, y: s.y, seed, scale };
+  return { x: s.x, y: s.y, seed, scale, gridX: p.gx, gridY: p.gy };
 }
 
 /**

@@ -48,10 +48,12 @@ export type { CompositeSettings } from './render/post/composite.js';
 export { FullscreenPass, FULLSCREEN_VERT } from './render/post/fullscreen.js';
 
 export { Input } from './input/input.js';
-export type { PointerState } from './input/input.js';
+export type { PointerState, InputPhase } from './input/input.js';
 
 export { SceneManager } from './scene/scene.js';
 export type { Scene, SceneContext } from './scene/scene.js';
+export { Transition } from './scene/transition.js';
+export type { TransitionOptions, TransitionStyle } from './scene/transition.js';
 
 export { Font, drawText } from './assets/font.js';
 export type { Glyph, FontOptions, TextStyle, TextAlign } from './assets/font.js';

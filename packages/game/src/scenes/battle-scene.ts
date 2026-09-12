@@ -724,7 +724,7 @@ export class BattleScene implements Scene {
     if (button(ui, { x: r.x + r.w / 2 - 110, y: r.y + r.h - 62, w: 220, h: 44 }, 'RETURN TO ISLAND', {
       color: won ? PALETTE.good : PALETTE.typeInfra,
     })) {
-      ctx.scenes.pop();
+      ctx.scenes.popWith({ style: 'iris', duration: 0.34 });
     }
   }
 }
