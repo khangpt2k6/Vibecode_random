@@ -1,5 +1,6 @@
 import { App } from '@stackmon/engine';
 import { WorldScene } from './scenes/world-scene.js';
+import { GameAudio } from './audio/game-audio.js';
 import { loadPlayer } from './state/save.js';
 
 /**
@@ -26,6 +27,10 @@ function showCrash(err: unknown): void {
 
 try {
   const app = new App({ canvas, onError: showCrash });
+  // Before the scene, so the samples are decoding while the world generates.
+  // Nothing is audible until the player's first click resumes the context,
+  // which is the browser's rule, not ours.
+  const audio = GameAudio.start();
   const player = loadPlayer();
   app.start(new WorldScene(player));
 
@@ -38,6 +43,7 @@ try {
   // Expose for debugging from the console and for the screenshot harness.
   (window as unknown as { stackmon: App; player: typeof player }).stackmon = app;
   (window as unknown as { player: typeof player }).player = player;
+  (window as unknown as { audio: GameAudio }).audio = audio;
 } catch (err) {
   showCrash(err);
   throw err;

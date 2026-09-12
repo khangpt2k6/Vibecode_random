@@ -61,5 +61,12 @@ export type { Glyph, FontOptions, TextStyle, TextAlign } from './assets/font.js'
 export { ParticleSystem } from './render/particles.js';
 export type { ParticleEmitConfig } from './render/particles.js';
 
+export { AudioBus, makeReverb, makeNoise } from './audio/bus.js';
+export type { AudioBusOptions } from './audio/bus.js';
+export { Sfx } from './audio/sfx.js';
+export type { PlayOptions } from './audio/sfx.js';
+export { Ambience } from './audio/ambience.js';
+export type { AmbienceOptions } from './audio/ambience.js';
+
 export { App } from './app.js';
 export type { AppOptions } from './app.js';
