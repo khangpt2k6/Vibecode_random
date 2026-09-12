@@ -28,6 +28,7 @@ import {
   type UIContext,
 } from '../ui/widgets.js';
 import { GLYPHS } from '../ui/glyphs.js';
+import { playSfx } from '../audio/game-audio.js';
 
 /**
  * The battle screen.
@@ -198,10 +199,18 @@ export class BattleScene implements Scene {
     // Escape is the way out of everything, innermost layer first: the swap
     // list, then the leave prompt, then the battle.
     if (ctx.input.wasPressed('Escape')) {
-      if (this.swapping) this.swapping = false;
-      else if (this.confirmLeave) this.confirmLeave = false;
-      else if (this.phase === 'over') ctx.scenes.popWith({ style: 'iris', duration: 0.34 });
-      else this.confirmLeave = true;
+      if (this.swapping) {
+        this.swapping = false;
+        playSfx('back', 0.7);
+      } else if (this.confirmLeave) {
+        this.confirmLeave = false;
+        playSfx('back', 0.7);
+      } else if (this.phase === 'over') {
+        ctx.scenes.popWith({ style: 'iris', duration: 0.34 });
+      } else {
+        this.confirmLeave = true;
+        playSfx('open', 0.8);
+      }
     }
 
     void cam;
@@ -538,6 +547,7 @@ export class BattleScene implements Scene {
         icon: GLYPHS.close,
       })) {
         this.confirmLeave = true;
+        playSfx('open', 0.8);
         ctx.input.consumeClick();
       }
     }
@@ -886,12 +896,14 @@ export class BattleScene implements Scene {
       active: true,
     })) {
       this.confirmLeave = false;
+      playSfx('back', 0.7);
       ctx.input.consumeClick();
     }
     if (button(ui, { x: r.x + r.w - 220, y: r.y + r.h - 60, w: 186, h: 42 }, 'LEAVE', {
       color: PALETTE.danger,
       icon: GLYPHS.close,
     })) {
+      playSfx('deny', 0.7);
       ctx.scenes.popWith({ style: 'iris', duration: 0.34 });
     }
   }
