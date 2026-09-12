@@ -385,9 +385,13 @@ export class ShapeBatch {
     const hh = cfg.tileH * 0.5 - inset * 0.5;
     const lift = height * cfg.elevation;
 
-    const topRgb = shadeRgb(rgb, 1.18);
-    const leftRgb = shadeRgb(rgb, 0.62);
-    const rightRgb = shadeRgb(rgb, 0.86);
+    // The colour passed in is the lit top face; the sides fall away from it.
+    // Anchoring at the top rather than the middle means callers author the
+    // colour they actually see most of, and the spread stays wide enough for
+    // adjacent blocks to read as separate volumes.
+    const topRgb = rgb;
+    const leftRgb = shadeRgb(rgb, 0.45);
+    const rightRgb = shadeRgb(rgb, 0.70);
 
     // left face: from west corner down, across to south corner
     this.quad(

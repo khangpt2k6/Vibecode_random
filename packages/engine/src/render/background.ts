@@ -28,7 +28,11 @@ uniform vec3  uColorGrid;
 uniform vec3  uColorTrace; // the bright pulses
 uniform float uIntensity;
 
-out vec4 outColor;
+// Two outputs, because the scene target this draws into has two attachments.
+// A fullscreen pass that declares only one leaves the second undefined, and
+// the emissive buffer then feeds the bloom whatever was left in memory.
+layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outEmissive;
 
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -49,22 +53,30 @@ void main() {
   vec2 world = pixel / uZoom + uCamera;
 
   vec3 color = uColorDeep;
+  vec3 glow = vec3(0.0);
 
   // Two grid scales: a fine one that fades out when zoomed far out, and a
   // coarse one that carries the structure at every distance.
-  float fine = gridLines(world, 64.0, 1.4);
-  float coarse = gridLines(world, 512.0, 1.8);
-  float fineFade = smoothstep(0.25, 0.6, uZoom);
+  float fine = gridLines(world, 128.0, 1.3);
+  float coarse = gridLines(world, 512.0, 1.7);
+  float fineFade = smoothstep(0.14, 0.42, uZoom);
 
-  color = mix(color, uColorGrid, fine * 0.30 * fineFade);
-  color = mix(color, uColorGrid, coarse * 0.45);
+  color = mix(color, uColorGrid, fine * 0.34 * fineFade);
+  color = mix(color, uColorGrid, coarse * 0.55);
+
+  // Node dots where the coarse lines cross. Junctions give the grid a sense
+  // of being a circuit rather than graph paper.
+  vec2 toNode = abs(fract(world / 512.0 - 0.5) - 0.5) * 512.0;
+  float node = 1.0 - smoothstep(2.0, 5.0, length(toNode));
+  color = mix(color, uColorTrace, node * 0.30);
+  glow += uColorTrace * node * 0.35;
 
   // Data pulses: pick a cell, give it a phase, run a bright dash along its
   // row. Sparse on purpose - constant motion everywhere is exhausting to
   // look at for the hours this game expects.
   vec2 cell = floor(world / 512.0);
   float seed = hash21(cell);
-  if (seed > 0.80) {
+  if (seed > 0.72) {
     float phase = fract(uTime * 0.18 + seed * 7.31);
     vec2 local = fract(world / 512.0);
     float along = seed > 0.9 ? local.x : local.y;
@@ -72,7 +84,9 @@ void main() {
 
     float head = 1.0 - smoothstep(0.0, 0.10, abs(along - phase));
     float onLine = 1.0 - smoothstep(0.0, 0.012, abs(across - 0.5));
-    color += uColorTrace * head * onLine * 0.9;
+    vec3 pulse = uColorTrace * head * onLine;
+    color += pulse * 0.9;
+    glow += pulse * 1.5;
   }
 
   // Slow vertical drift, so the backdrop is never completely still even when
@@ -80,7 +94,11 @@ void main() {
   float breathe = 0.94 + 0.06 * sin(uTime * 0.35 + world.y * 0.0006);
   color *= breathe;
 
-  outColor = vec4(color * uIntensity, 1.0);
+  color *= uIntensity;
+  outColor = vec4(color, 1.0);
+  // Only the pulses and junction nodes glow; the grid itself must not, or the
+  // whole backdrop turns into a light source and swallows the world on it.
+  outEmissive = vec4(glow * uIntensity, 1.0);
 }`;
 
 export interface BackgroundColors {
@@ -90,8 +108,8 @@ export interface BackgroundColors {
 }
 
 export const DEFAULT_BACKGROUND: BackgroundColors = {
-  deep: 0x080e1e,
-  grid: 0x2d4577,
+  deep: 0x070c1a,
+  grid: 0x31497c,
   trace: 0x4de0ff,
 };
 

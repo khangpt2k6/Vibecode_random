@@ -44,7 +44,13 @@ export function createGLContext(canvas: HTMLCanvasElement): GLContext {
     premultipliedAlpha: true,
     preserveDrawingBuffer: false,
     powerPreference: 'high-performance',
-    desynchronized: true,
+    // Not desynchronized. The low-latency path lets the canvas bypass the
+    // page compositor, which buys a frame of input latency at the cost of
+    // the canvas tearing under any external capture - screenshots came back
+    // showing the world but missing the UI drawn later in the same frame.
+    // A frame of latency is worth far less than being able to trust what a
+    // screenshot shows.
+    desynchronized: false,
   });
 
   if (!gl) throw new WebGLUnavailableError();
@@ -150,13 +156,17 @@ export function mixRgb(a: number, b: number, t: number): number {
   return (r << 16) | (g << 8) | bl;
 }
 
-/** Scale a colour toward black (f < 1) or white (f > 1). Used for iso faces. */
+/**
+ * Multiply a colour by a lighting factor, clamped. Used for isometric faces.
+ *
+ * Multiplication, not a mix toward white. Mixing brightens by a fraction of
+ * the distance to white, which on a dark colour is enormous - a 1.18 "slight
+ * highlight" on a near-black blue lands halfway to grey and takes the hue
+ * with it. Scaling keeps the hue and keeps dark things dark.
+ */
 export function shadeRgb(c: number, f: number): number {
-  if (f <= 1) {
-    const r = Math.round(((c >> 16) & 0xff) * f);
-    const g = Math.round(((c >> 8) & 0xff) * f);
-    const b = Math.round((c & 0xff) * f);
-    return (r << 16) | (g << 8) | b;
-  }
-  return mixRgb(c, 0xffffff, Math.min(1, f - 1));
+  const r = Math.min(255, Math.round(((c >> 16) & 0xff) * f));
+  const g = Math.min(255, Math.round(((c >> 8) & 0xff) * f));
+  const b = Math.min(255, Math.round((c & 0xff) * f));
+  return (r << 16) | (g << 8) | b;
 }

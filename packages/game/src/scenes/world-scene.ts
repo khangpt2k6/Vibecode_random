@@ -125,7 +125,7 @@ export class WorldScene implements Scene {
         // the ground somewhere for the eye to travel instead of reading as
         // undifferentiated terrain.
         const d = detail.fbm(gx * 0.14, gy * 0.14, 3);
-        const trace = d > 0.53 && d < 0.565 && height > 0 ? 1 : 0;
+        const trace = d > 0.545 && d < 0.558 && height > 0 ? 1 : 0;
 
         // Ramp the colour by elevation rather than shading one base tone, so
         // the plateaus separate tonally instead of all reading as one mass.
@@ -295,7 +295,7 @@ export class WorldScene implements Scene {
           shapes.line(
             top.x - DEFAULT_ISO.tileW * 0.5, top.y,
             top.x + DEFAULT_ISO.tileW * 0.5, top.y,
-            2, PALETTE.glowCyan, 0.85, 2.4,
+            1.6, PALETTE.glowCyan, 0.55, 1.3,
           );
         }
 
@@ -308,47 +308,89 @@ export class WorldScene implements Scene {
     }
   }
 
+  /**
+   * Light bands wrapping the two visible faces of a tower.
+   *
+   * Deliberately not `isoBlockTrim`: tracing the full diamond at every floor
+   * draws the two hidden edges too, and a stack of complete outlines reads as
+   * a pile of rings rather than as a building with lit floors. Only the front
+   * two edges are ever visible on an isometric block, so only those are drawn.
+   */
+  private drawFaceBands(
+    base: { gx: number; gy: number; h: number },
+    lift: number,
+    inset: number,
+    color: number,
+    alpha: number,
+    emissive: number,
+    shapes: SceneContext['renderer']['shapes'],
+  ): void {
+    const c = gridToScreen(base, DEFAULT_ISO);
+    const hw = DEFAULT_ISO.tileW * 0.5 - inset;
+    const hh = DEFAULT_ISO.tileH * 0.5 - inset * 0.5;
+    shapes.line(c.x - hw, c.y - lift, c.x, c.y + hh - lift, 1.4, color, alpha, emissive);
+    shapes.line(c.x, c.y + hh - lift, c.x + hw, c.y - lift, 1.4, color, alpha, emissive * 1.25);
+  }
+
   private renderStructures(ctx: SceneContext): void {
     const { shapes, quads } = ctx.renderer;
+    const iso = DEFAULT_ISO;
 
     for (const s of this.structures) {
       const tile = this.tiles[s.gy * MAP_SIZE + s.gx]!;
       const base = { gx: s.gx, gy: s.gy, h: tile.height };
       const color = TYPES[s.type].color;
-      const pulse = 0.65 + 0.35 * Math.sin(this.time * 1.6 + s.phase);
+      const pulse = 0.6 + 0.4 * Math.sin(this.time * 1.5 + s.phase);
 
-      // Body, inset so it sits on the tile rather than covering it edge to edge.
-      shapes.isoBlock(base, s.height, typeFill(s.type), 1, 0.18, DEFAULT_ISO, 7);
+      // Plinth: a short, wide, unlit slab. Towers that rise straight out of
+      // the ground look pasted on; a base course grounds them.
+      shapes.isoBlock(base, 0.4, PALETTE.panelDark, 1, 0, iso, 3);
 
-      // Stacked light bands up the tower - the single strongest read that a
-      // structure is powered and doing work.
-      for (let i = 1; i < s.height; i++) {
-        shapes.isoBlockTrim(
-          base, i, 1.6, color, 0.55 + 0.25 * pulse, 1.2 + pulse, DEFAULT_ISO,
+      // Body, inset so the plinth shows as a ledge around it.
+      const bodyBase = { gx: s.gx, gy: s.gy, h: tile.height + 0.4 };
+      shapes.isoBlock(bodyBase, s.height, typeFill(s.type), 1, 0.05, iso, 9);
+
+      // Lit floors up the two visible faces.
+      const floors = Math.max(2, Math.round(s.height * 1.6));
+      for (let i = 1; i <= floors; i++) {
+        const t = i / (floors + 1);
+        this.drawFaceBands(
+          bodyBase,
+          t * s.height * iso.elevation,
+          9,
+          color,
+          0.30 + 0.22 * pulse,
+          0.9 + pulse * 0.5,
+          shapes,
         );
       }
-      shapes.isoBlockTrim(base, s.height, 3, color, 1, 2.4 + pulse * 1.6, DEFAULT_ISO);
 
-      // Beacon above the roof.
-      const top = gridToScreen({ gx: s.gx, gy: s.gy, h: tile.height + s.height }, DEFAULT_ISO);
-      shapes.circle(top.x, top.y - 10, 3 + pulse * 1.6, color, 1, 3.2, 12);
-      shapes.ring(top.x, top.y - 10, 9 + pulse * 5, 1.2, color, 0.35 * pulse, 2.0, 18);
+      // Roof: a bright cap plus the full outline. This is the one place the
+      // complete diamond belongs, because it terminates the silhouette.
+      const roof = { gx: s.gx, gy: s.gy, h: tile.height + 0.4 + s.height };
+      shapes.isoTile(roof, color, 0.85, 1.5 + pulse * 0.8, iso, 9);
+      shapes.isoTileOutline(roof, 1.6, color, 1, 2.2 + pulse, iso);
 
+      // Mast and beacon.
+      const top = gridToScreen(roof, iso);
+      const mastH = 12 + s.height * 2;
+      shapes.line(top.x, top.y, top.x, top.y - mastH, 1.4, PALETTE.steelLight, 0.9, 0.2);
+      shapes.circle(top.x, top.y - mastH, 2.2 + pulse * 1.4, color, 1, 3.0, 10);
+      shapes.ring(top.x, top.y - mastH, 7 + pulse * 6, 1, color, 0.30 * pulse, 1.8, 18);
+
+      // Label plate.
       const label = s.label;
-      const width = this.font.measure(label) * 0.85;
+      const width = this.font.measure(label) * 0.8;
       const lx = top.x;
-      const ly = top.y - 34;
-      shapes.rect(lx - width / 2 - 5, ly - 2, width + 10, 15, PALETTE.voidDeep, 0.78, 0);
-      shapes.line(
-        lx - width / 2 - 5, ly + 13.5, lx + width / 2 + 5, ly + 13.5,
-        1.2, color, 0.9, 1.8,
-      );
+      const ly = top.y - mastH - 26;
+      shapes.rect(lx - width / 2 - 6, ly - 3, width + 12, 16, PALETTE.voidDeep, 0.8, 0);
+      shapes.line(lx - width / 2 - 6, ly + 13, lx + width / 2 + 6, ly + 13, 1.2, color, 0.85, 1.5);
       drawText(quads, this.font, label, lx, ly, {
-        scale: 0.85,
+        scale: 0.8,
         color,
         align: 'center',
-        emissive: 1.4,
-        letterSpacing: 1,
+        emissive: 1.2,
+        letterSpacing: 1.1,
       });
     }
   }

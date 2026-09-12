@@ -26,11 +26,11 @@ export const PALETTE = {
   // into one another and the whole island reads as a flat smudge. These run
   // from a shadowed base to a lit plateau, and the face shading in isoBlock
   // then spreads each of them further.
-  terrainBase: 0x16203a,
-  terrainLow: 0x24314f,
-  terrainMid: 0x334a70,
-  terrainHigh: 0x445e90,
-  terrainPeak: 0x5876ab,
+  terrainBase: 0x121c33,
+  terrainLow: 0x18253f,
+  terrainMid: 0x1f2f4d,
+  terrainHigh: 0x27395c,
+  terrainPeak: 0x31456d,
 
   // --- text ---
   ink: 0xdce9ff,

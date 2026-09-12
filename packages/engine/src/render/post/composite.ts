@@ -35,18 +35,25 @@ uniform vec2  uResolution;
 uniform float uFlash;
 uniform vec3  uFlashColor;
 uniform float uDesaturate;
+uniform float uKnee;
 
 out vec4 outColor;
 
-// ACES filmic tone map, Narkowicz's fit. Keeps saturated neon from clipping
-// to flat white the moment bloom pushes it past 1.0.
-vec3 tonemapACES(vec3 x) {
-  const float a = 2.51;
-  const float b = 0.03;
-  const float c = 2.43;
-  const float d = 0.59;
-  const float e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+// Highlight rolloff with a linear toe.
+//
+// Not ACES. ACES is built for HDR photography, where the interesting range
+// sits above 1.0, and it pays for that by lifting the bottom of the curve
+// hard - it maps 0.24 to 0.36. In a game whose entire art direction is a
+// dark room lit by neon, that lift is fatal: it turns near-black terrain
+// into mid-grey and drains the colour out of it.
+//
+// So: pass everything below the knee through untouched, and compress only
+// what is above it, asymptotically toward white. Dark stays dark, and
+// bloomed neon still rolls off instead of clipping to a flat white blob.
+vec3 tonemap(vec3 x, float knee) {
+  vec3 over = max(x - knee, 0.0);
+  vec3 rolled = knee + over / (1.0 + over / max(1e-4, 1.0 - knee));
+  return clamp(min(x, rolled), 0.0, 1.0);
 }
 
 float hash12(vec2 p) {
@@ -76,7 +83,7 @@ void main() {
   vec3 color = scene + bloom * uBloomIntensity;
 
   color *= uExposure;
-  color = tonemapACES(color);
+  color = tonemap(color, uKnee);
 
   if (uDesaturate > 0.0001) {
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
@@ -108,6 +115,8 @@ void main() {
 export interface CompositeSettings {
   bloomIntensity: number;
   exposure: number;
+  /** Brightness above which highlights start compressing. */
+  knee: number;
   vignette: number;
   scanlineIntensity: number;
   chromatic: number;
@@ -129,9 +138,10 @@ export interface CompositeSettings {
  * where it registers as fringing rather than as a bug.
  */
 export const DEFAULT_COMPOSITE: CompositeSettings = {
-  bloomIntensity: 0.62,
-  exposure: 1.08,
-  vignette: 0.42,
+  bloomIntensity: 0.5,
+  exposure: 1.0,
+  knee: 0.62,
+  vignette: 0.34,
   scanlineIntensity: 0.035,
   chromatic: 0.0045,
   grain: 0.015,
@@ -179,6 +189,7 @@ export class CompositePass {
       sh.setTexture('uBloom', bloom, 1);
       sh.setFloat('uBloomIntensity', s.bloomIntensity);
       sh.setFloat('uExposure', s.exposure);
+      sh.setFloat('uKnee', s.knee);
       sh.setFloat('uVignette', s.vignette);
       sh.setFloat('uScanlineIntensity', s.scanlineIntensity);
       // Tie the scanline count to real pixel height, so the spacing looks the
