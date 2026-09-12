@@ -122,6 +122,20 @@ describe('nudges', () => {
     expect(nudges(p, T0).map((n) => n.id)).not.toContain('harvest');
   });
 
+  it('tells a broke player where scrap actually comes from', () => {
+    // The one state the game can strand someone in: scrap buys captures,
+    // seeds and structures, and nothing on the island grows it.
+    const p = newPlayer('t');
+    giveStarterParty(p);
+    p.resources.scrap = 0;
+    const broke = nudges(p, T0).find((n) => n.id === 'broke');
+    expect(broke).toBeDefined();
+    expect(broke!.text).toContain('Ops Centre');
+
+    gain(p, { scrap: 500 });
+    expect(nudges(p, T0).map((n) => n.id)).not.toContain('broke');
+  });
+
   it('reports ready crops and empty plots', () => {
     const p = newPlayer('t');
     giveStarterParty(p);
