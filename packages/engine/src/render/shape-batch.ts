@@ -78,6 +78,16 @@ export class ShapeBatch {
   private vertexCount = 0;
   private indexCount = 0;
   private started = false;
+  /**
+   * Kept so `flush` can rebind its own program and projection.
+   *
+   * A batch may not assume its program is still current when it flushes:
+   * sibling batches bind theirs between `begin` and `end`, and a flush that
+   * inherits whichever program happens to be active draws this batch's
+   * vertices through a completely unrelated shader - which fails silently,
+   * because the attribute layout still "works", it just means something else.
+   */
+  private projection = new Float32Array(9);
 
   /** Draw calls issued since the last `resetStats`. */
   drawCalls = 0;
@@ -114,8 +124,7 @@ export class ShapeBatch {
   }
 
   begin(projection: Float32Array): void {
-    this.shader.use();
-    this.shader.setMat3('uProjection', projection);
+    this.projection.set(projection);
     this.started = true;
     this.vertexCount = 0;
     this.indexCount = 0;
@@ -430,6 +439,9 @@ export class ShapeBatch {
   flush(): void {
     if (this.indexCount === 0) return;
     const gl = this.gl;
+
+    this.shader.use();
+    this.shader.setMat3('uProjection', this.projection);
 
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);

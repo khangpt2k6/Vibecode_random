@@ -73,6 +73,8 @@ export class QuadBatch {
   private quadCount = 0;
   private currentTexture: Texture | null = null;
   private started = false;
+  /** See the note in ShapeBatch: flush must bind its own program. */
+  private projection = new Float32Array(9);
 
   drawCalls = 0;
   quadsDrawn = 0;
@@ -121,8 +123,7 @@ export class QuadBatch {
   }
 
   begin(projection: Float32Array): void {
-    this.shader.use();
-    this.shader.setMat3('uProjection', projection);
+    this.projection.set(projection);
     this.started = true;
     this.quadCount = 0;
     this.currentTexture = null;
@@ -213,6 +214,8 @@ export class QuadBatch {
     if (this.quadCount === 0 || !this.currentTexture) return;
     const gl = this.gl;
 
+    this.shader.use();
+    this.shader.setMat3('uProjection', this.projection);
     this.shader.setTexture('uTexture', this.currentTexture.handle, 0);
 
     gl.bindVertexArray(this.vao);
