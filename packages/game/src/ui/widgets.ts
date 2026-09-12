@@ -159,6 +159,20 @@ export function tooltip(ui: UIContext, screenW: number, screenH: number, title: 
   }
 }
 
+/**
+ * A pill tag whose RIGHT edge sits at `right`.
+ *
+ * Needed wherever the label length varies - "NEEDS IMAGE REGISTRY" is twice
+ * the width of "BUILT", and a left-anchored pill for both means one of them
+ * hangs off the card.
+ */
+export function tagRight(
+  ui: UIContext, right: number, y: number, text: string, color: number, dark = false,
+): number {
+  const w = ui.fontSmall.measure(text) * 0.9 + 14;
+  return tag(ui, right - w, y, text, color, dark);
+}
+
 /** A small pill tag: "COST 24", "CD 3", a type label. */
 export function tag(ui: UIContext, x: number, y: number, text: string, color: number, dark = false): number {
   const w = ui.fontSmall.measure(text) * 0.9 + 14;

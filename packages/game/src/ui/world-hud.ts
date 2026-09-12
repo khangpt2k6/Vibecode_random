@@ -19,7 +19,7 @@ import {
 } from '@stackmon/core';
 import { PALETTE, shade, type TypeId } from '../art/palette.js';
 import { drawIconBadge } from '../art/icons.js';
-import { button, hovered, panel, paragraph, tag, type Rect, type UIContext } from './widgets.js';
+import { button, hovered, panel, paragraph, tag, tagRight, type Rect, type UIContext } from './widgets.js';
 
 /**
  * The overworld HUD.
@@ -178,10 +178,13 @@ export function drawBuildMenu(
   const result: BuildMenuResult = { close: false, build: null, rush: false };
   ui.shapes.rect(0, 0, width, height, PALETTE.uiShadow, 0.55, 0);
 
-  const w = Math.min(1020, width - 56);
-  const h = Math.min(560, height - 60);
+  // Sized to the window rather than to a fixed height: the whole tree has to
+  // fit, because the locked cards are the screen's reason for existing and a
+  // cut-off row hides exactly those.
+  const w = Math.min(1100, width - 40);
+  const h = height - 32;
   const x = (width - w) / 2;
-  const y = (height - h) / 2;
+  const y = 16;
   panel(ui, { x, y, w, h }, PALETTE.typeInfra, 0.985, 16);
 
   drawText(ui.quads, ui.fontBig ?? ui.font, 'BUILD', x + 26, y + 18, {
@@ -214,16 +217,18 @@ export function drawBuildMenu(
     listTop += 64;
   }
 
-  // The tree, in two columns.
+  // Three columns so the whole tree fits without scrolling. A build menu you
+  // have to scroll hides exactly the locked entries whose reasons are the
+  // point of the screen.
   const menu = new Map(buildMenu(p, p.base).map((e) => [e.id, e] as const));
-  const cols = 2;
-  const cardW = (w - 52) / cols;
-  const cardH = 96;
+  const cols = 3;
+  const cardW = (w - 40 - (cols - 1) * 12) / cols;
+  const cardH = Math.max(96, Math.min(118, (h - 80) / 4 - 12));
   for (let i = 0; i < BUILDINGS.length; i++) {
     const spec = BUILDINGS[i]!;
     const entry = menu.get(spec.id)!;
     const cx = x + 20 + (i % cols) * (cardW + 12);
-    const cy = listTop + Math.floor(i / cols) * (cardH + 10);
+    const cy = listTop + Math.floor(i / cols) * (cardH + 12);
     if (cy + cardH > y + h - 12) continue;
 
     const rect: Rect = { x: cx, y: cy, w: cardW, h: cardH };
@@ -246,12 +251,12 @@ export function drawBuildMenu(
     });
 
     if (entry.state === 'built') {
-      tag(ui, rect.x + rect.w - 86, rect.y + 12, 'BUILT', PALETTE.good, true);
-      paragraph(ui, rect.x + 18, rect.y + 32, rect.w - 36, spec.description, PALETTE.inkSoft, 0.95);
+      tagRight(ui, rect.x + rect.w - 14, rect.y + 12, 'BUILT', PALETTE.good, true);
+      paragraph(ui, rect.x + 18, rect.y + 34, rect.w - 34, spec.description, PALETTE.inkSoft, 0.92);
     } else if (entry.state === 'locked') {
       const needs = entry.missingRequires.map((r) => getBuilding(r).name).join(' + ');
-      tag(ui, rect.x + rect.w - 110, rect.y + 12, `NEEDS ${needs}`, PALETTE.warn);
-      paragraph(ui, rect.x + 18, rect.y + 34, rect.w - 36, spec.whyGated, PALETTE.inkSoft, 0.92);
+      tagRight(ui, rect.x + rect.w - 14, rect.y + 30, `NEEDS ${needs}`, PALETTE.warn);
+      paragraph(ui, rect.x + 18, rect.y + 52, rect.w - 34, spec.whyGated, PALETTE.inkSoft, 0.9);
     } else {
       // Cost chips, with the ones you cannot afford in red.
       let tx = rect.x + 18;
@@ -259,9 +264,9 @@ export function drawBuildMenu(
         const short = (entry.missing[k] ?? 0) > 0;
         tx += tag(ui, tx, rect.y + 34, `${RESOURCES[k].label} ${v}`, short ? PALETTE.danger : RESOURCE_COLORS[k]) + 5;
       }
-      paragraph(ui, rect.x + 18, rect.y + 56, rect.w - 130, spec.description, PALETTE.inkSoft, 0.92);
+      paragraph(ui, rect.x + 18, rect.y + 56, rect.w - 34, spec.description, PALETTE.inkSoft, 0.9);
       const canBuild = entry.state === 'available' && !p.base.building;
-      if (button(ui, { x: rect.x + rect.w - 104, y: rect.y + rect.h - 44, w: 88, h: 32 }, 'BUILD', {
+      if (button(ui, { x: rect.x + rect.w - 100, y: rect.y + rect.h - 40, w: 86, h: 30 }, 'BUILD', {
         color: spec.tint, small: true, disabled: !canBuild,
       })) {
         result.build = spec.id;
