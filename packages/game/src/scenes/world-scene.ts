@@ -34,6 +34,8 @@ import {
 import { drawBuilding, drawMainHall, type BuildingStyle } from '../art/buildings.js';
 import { drawIconBadge } from '../art/icons.js';
 import { drawCreature, drawNamePlate, type CreatureVisual } from '../art/creatures.js';
+import { BattleScene, starterSetup } from './battle-scene.js';
+import { incidentsOfTier } from '@stackmon/content';
 
 /**
  * The overworld.
@@ -154,27 +156,49 @@ export class WorldScene implements Scene {
     this.scatterProps();
     this.spawnWild();
 
+    ctx.renderer.camera.minZoom = 0.3;
+    ctx.renderer.camera.maxZoom = 2.6;
+    this.fitCamera(ctx);
+  }
+
+  exit(): void {
+    this.font.dispose();
+    this.fontSmall.dispose();
+  }
+
+  /** Coming back from a battle: the battle moved the camera, put it back. */
+  resume(ctx: SceneContext): void {
+    this.fitCamera(ctx);
+  }
+
+  private fitCamera(ctx: SceneContext): void {
     const camera = ctx.renderer.camera;
     const centre = gridToScreen({ gx: MAP_SIZE / 2, gy: MAP_SIZE / 2, h: 1 }, DEFAULT_ISO);
-    camera.minZoom = 0.3;
-    camera.maxZoom = 2.6;
-
     const worldW = MAP_SIZE * DEFAULT_ISO.tileW;
     const worldH = MAP_SIZE * DEFAULT_ISO.tileH + MAX_HEIGHT * DEFAULT_ISO.elevation;
-    const fit = Math.min(ctx.renderer.ctx.width / worldW, ctx.renderer.ctx.height / worldH) * 1.4;
-    camera.snapTo(centre.x, centre.y);
-    camera.setZoom(Math.max(camera.minZoom, Math.min(1.1, fit)), true);
     camera.bounds = {
       minX: -worldW / 2 - 160,
       maxX: worldW / 2 + 160,
       minY: -160,
       maxY: worldH + 160,
     };
+    const fit = Math.min(ctx.renderer.ctx.width / worldW, ctx.renderer.ctx.height / worldH) * 1.4;
+    camera.snapTo(centre.x, centre.y);
+    camera.setZoom(Math.max(camera.minZoom, Math.min(1.1, fit)), true);
   }
 
-  exit(): void {
-    this.font.dispose();
-    this.fontSmall.dispose();
+  private battleCount = 0;
+
+  /** Clicking the hall picks a fight. Rotates through the tier-1 incidents. */
+  private startBattle(ctx: SceneContext): void {
+    const pool = incidentsOfTier(1);
+    const incident = pool[this.battleCount % pool.length]!;
+    this.battleCount++;
+    ctx.scenes.push(
+      new BattleScene({
+        setup: starterSetup(incident.id, `island-battle-${this.battleCount}`),
+      }),
+    );
   }
 
   // ------------------------------------------------------------ generation
@@ -528,6 +552,16 @@ export class WorldScene implements Scene {
     this.hoverGx = picked ? picked.gx : -1;
     this.hoverGy = picked ? picked.gy : -1;
 
+    const onHall =
+      picked !== null &&
+      Math.abs(picked.gx - this.hallAt.gx) <= 1 &&
+      Math.abs(picked.gy - this.hallAt.gy) <= 1;
+
+    if (input.clicked && onHall) {
+      this.startBattle(ctx);
+      return;
+    }
+
     if (input.clicked && picked) {
       const p = gridToScreen({ gx: picked.gx, gy: picked.gy, h: picked.h }, DEFAULT_ISO);
       this.particles.emit({
@@ -804,10 +838,14 @@ export class WorldScene implements Scene {
     if (this.hoverGx >= 0) {
       const tile = this.tiles[this.hoverGy * MAP_SIZE + this.hoverGx]!;
       const struct = this.structures.find((s) => s.gx === this.hoverGx && s.gy === this.hoverGy);
-      const title = struct ? struct.label : tile.terrain.toUpperCase();
-      const sub = struct
-        ? 'Technology outpost'
-        : `Elevation ${tile.height}${tile.path ? ' - path' : ''}`;
+      const onHall =
+        Math.abs(this.hoverGx - this.hallAt.gx) <= 1 && Math.abs(this.hoverGy - this.hallAt.gy) <= 1;
+      const title = onHall ? 'OPS CENTRE' : struct ? struct.label : tile.terrain.toUpperCase();
+      const sub = onHall
+        ? 'Click to respond to an incident'
+        : struct
+          ? 'Technology outpost'
+          : `Elevation ${tile.height}${tile.path ? ' - path' : ''}`;
 
       const w = Math.max(this.font.measure(title), this.fontSmall.measure(sub)) + 44;
       const x = width / 2 - w / 2;

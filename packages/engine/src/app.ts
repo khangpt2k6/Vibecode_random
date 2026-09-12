@@ -66,9 +66,6 @@ export class App {
       this.renderer.handleResize();
       this.renderer.update(dt);
       this.scenes.update(dt);
-      // Input edges are consumed by exactly one tick, so clearing has to
-      // happen after every scene has had a chance to read them.
-      this.input.endFrame();
     } catch (err) {
       this.crash(err);
     }
@@ -80,6 +77,13 @@ export class App {
       this.renderer.beginFrame();
       this.scenes.render(alpha);
       this.renderer.endFrame();
+      // Input edges (pressed, released, clicked) live until the end of the
+      // rendered frame, not the end of the simulation tick. The immediate-mode
+      // UI hit-tests while it draws, so a click cleared at the end of update
+      // was gone before any button ever saw it. Clearing here means every
+      // update in the frame and the render itself all see the same edge, and
+      // a frame with zero simulation ticks still cannot drop one.
+      this.input.endFrame();
     } catch (err) {
       this.crash(err);
     }
