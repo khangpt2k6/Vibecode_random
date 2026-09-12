@@ -8,5 +8,6 @@
  * Nothing in this package may import @stackmon/engine.
  */
 export * from './battle/index.js';
+export * from './progression/index.js';
 
 export const CORE_VERSION = 1;
