@@ -453,6 +453,9 @@ export class BattleScene implements Scene {
     // of the method and cannot see that the panel renderers reassign them.
     const hoverSkill = this.hoverSkill as Skill | null;
     const hoverTeach = this.hoverTeach as LogEntry | null;
+    // Nothing under the result overlay is interactive, so nothing under it
+    // should explain itself either.
+    if (this.phase === 'over') return;
     if (hoverSkill) {
       tooltip(ui, width, height, hoverSkill.name, `${hoverSkill.description}\n\n${hoverSkill.realWorld}`);
     } else if (hoverTeach?.teach) {
