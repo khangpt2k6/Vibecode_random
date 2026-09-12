@@ -105,7 +105,21 @@ interface Tile {
   path: boolean;
 }
 
-type PropKind = 'tree' | 'pine' | 'bush' | 'rock' | 'flowers' | 'tuft';
+/** Scatter that grows: spread across the island by terrain and noise. */
+type NatureKind = 'tree' | 'pine' | 'bush' | 'rock' | 'flowers' | 'tuft';
+
+/**
+ * Scatter that was installed: clustered around whatever built it.
+ *
+ * These exist so the base reads as running infrastructure rather than as
+ * houses in a field. They are deliberately not a replacement for the
+ * buildings - the hand-drawn structures carry the brand colour and the
+ * technology's icon, which is the whole identity of the place, and a generic
+ * low-poly hangar would throw that away. This is the pipework around them.
+ */
+type BaseKind = 'machine' | 'dish' | 'pipe' | 'crate' | 'panel';
+
+type PropKind = NatureKind | BaseKind;
 
 /**
  * Which slice of the baked atlas each kind of scatter draws from.
@@ -123,7 +137,34 @@ const PROP_POOLS: Record<PropKind, () => readonly string[]> = {
   rock: () => [...(ATLAS_GROUPS.rock ?? []), ...(ATLAS_GROUPS.stone ?? [])],
   flowers: () => ATLAS_GROUPS.flower ?? [],
   tuft: () => ATLAS_GROUPS.grass ?? [],
+
+  machine: () => ATLAS_GROUPS.machine ?? [],
+  dish: () => ATLAS_GROUPS.dish ?? [],
+  // Not the whole pipe group: the rings, the high supports and the tunnel
+  // entrance are all big vertical hoops that read as abandoned playground
+  // equipment when they are sitting on grass next to a cottage. What is left
+  // is pipework lying along the ground, which is what a yard looks like.
+  pipe: () => (ATLAS_GROUPS.pipe ?? []).filter((id) => !/ring|entrance|supportHigh/.test(id)),
+  crate: () => [...(ATLAS_GROUPS.crate ?? []), ...(ATLAS_GROUPS.resource ?? [])],
+  panel: () => ATLAS_GROUPS.panel ?? [],
 };
+
+/**
+ * How much of each thing ends up around a building, and how big.
+ *
+ * Weighted heavily toward crates because clutter should read as clutter.
+ * A satellite dish is a silhouette, and a silhouette repeated on every
+ * building stops being one - so dishes are rare and the boxes are common.
+ * The scales pull the larger space-kit models down a little so they sit
+ * beside a one-storey house rather than dwarfing it.
+ */
+const BASE_CLUTTER: ReadonlyArray<{ kind: BaseKind; weight: number; min: number; max: number }> = [
+  { kind: 'crate', weight: 5, min: 0.78, max: 1.08 },
+  { kind: 'pipe', weight: 3, min: 0.82, max: 1.05 },
+  { kind: 'machine', weight: 2, min: 0.74, max: 0.96 },
+  { kind: 'panel', weight: 1, min: 0.8, max: 1.0 },
+  { kind: 'dish', weight: 1, min: 0.68, max: 0.88 },
+];
 
 /**
  * Choose this prop's sprite from its tile, once, at generation time.
@@ -269,6 +310,11 @@ export class WorldScene implements Scene {
     this.spawnWild();
     syncPlots(this.player.base);
     this.layoutPlots();
+    // After layoutPlots, deliberately. It claims up to forty tiles around the
+    // Ops Centre for the farm - far more than the player owns yet - and then
+    // evicts any prop standing on one. Scattering clutter before it would
+    // place a yard's worth of machinery and silently delete most of it.
+    this.scatterBaseClutter();
 
     ctx.renderer.camera.minZoom = 0.3;
     ctx.renderer.camera.maxZoom = 2.6;
@@ -687,6 +733,76 @@ export class WorldScene implements Scene {
       }
     }
 
+    this.props.sort((a, b) => a.depth - b.depth);
+  }
+
+  /**
+   * Ring the buildings with machinery.
+   *
+   * The island scatter deliberately leaves a one-tile gap around every
+   * structure so houses are not swallowed by trees, and that gap is what
+   * makes the settlement read as houses in a field. Filling it with pipework,
+   * crates and generators is what turns it into somewhere that runs
+   * something - which is the whole premise of the game.
+   *
+   * Nothing here is interactive, so it skips `occluded()` for the same
+   * reason the foliage does: a decorative crate behind a rise is drawn
+   * correctly, and nobody ever needs to click it.
+   */
+  private scatterBaseClutter(): void {
+    const rng = this.rng.fork('base-clutter-v1');
+    const plots = new Set(this.plotTiles.map((t) => `${t.gx},${t.gy}`));
+    const added: Prop[] = [];
+
+    const place = (gx: number, gy: number, chance: number): void => {
+      if (gx < 1 || gy < 1 || gx >= MAP_SIZE - 1 || gy >= MAP_SIZE - 1) return;
+      const t = this.tiles[gy * MAP_SIZE + gx]!;
+      // Paths are how the player walks in, and the plaza is a path too.
+      if (t.terrain === 'water' || t.path) return;
+      if (plots.has(`${gx},${gy}`)) return;
+      if (this.structures.some((st) => st.gx === gx && st.gy === gy)) return;
+      if (!rng.chance(chance)) return;
+
+      const spec = rng.pickWeighted(BASE_CLUTTER, (c) => c.weight);
+      const jx = rng.range(-0.26, 0.26);
+      const jy = rng.range(-0.26, 0.26);
+      added.push({
+        kind: spec.kind,
+        sprite: spriteFor(spec.kind, gx, gy, added.length),
+        anchor: anchorAt(
+          { gx: gx + jx, gy: gy + jy, h: t.height },
+          rng.range(0, Math.PI * 2),
+          rng.range(spec.min, spec.max),
+        ),
+        depth: gx + gy + (jx + jy) * 0.5,
+      });
+    };
+
+    for (const s of this.structures) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          // Corners get less, so the yard hugs the walls instead of forming
+          // a solid square of boxes around every house.
+          place(s.gx + dx, s.gy + dy, dx !== 0 && dy !== 0 ? 0.34 : 0.6);
+        }
+      }
+    }
+
+    // The Ops Centre gets a service yard rather than a ring. Its plaza is
+    // path on all sides and the farm has the front, so what is left is the
+    // back and the flanks, two rings out from the plaza edge.
+    const { gx: hx, gy: hy } = this.hallAt;
+    for (let ring = 3; ring <= 4; ring++) {
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (let dy = -ring; dy <= ring; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+          place(hx + dx, hy + dy, 0.42);
+        }
+      }
+    }
+
+    this.props.push(...added);
     this.props.sort((a, b) => a.depth - b.depth);
   }
 
@@ -1232,6 +1348,16 @@ export class WorldScene implements Scene {
         break;
       case 'tuft':
         drawGrassTuft(shapes, prop.anchor);
+        break;
+      case 'machine':
+      case 'dish':
+      case 'pipe':
+      case 'crate':
+      case 'panel':
+        // Base clutter exists only as baked sprites. Hand-drawing a fallback
+        // generator and satellite dish, for the one case where the atlas
+        // fails to load, would be a lot of geometry nobody ever sees - the
+        // base just reads the way it did before the atlas existed.
         break;
     }
   }
