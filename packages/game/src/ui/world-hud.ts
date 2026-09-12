@@ -162,7 +162,12 @@ function compact(n: number): string {
  * other whenever they alternate. Five pills interleaved would be ten draw
  * calls for a strip of interface.
  */
-export function drawResourceBar(ui: UIContext, p: PlayerState, width: number): void {
+export interface ResourceBarResult {
+  /** The + on the scrap pill was clicked: show the player where scrap comes from. */
+  findScrap: boolean;
+}
+
+export function drawResourceBar(ui: UIContext, p: PlayerState, width: number): ResourceBarResult {
   const atlas = propAtlas();
   const pill = 104;
   const gap = 6;
@@ -185,6 +190,26 @@ export function drawResourceBar(ui: UIContext, p: PlayerState, width: number): v
     // screen is a paint chart.
     ui.shapes.circle(px + 25, y + barH / 2 - 1, 17, PALETTE.glassInk, 0.07, 0, 20);
   }
+
+  /**
+   * A + on scrap, and only on scrap.
+   *
+   * The other four currencies grow on the farm, so a player who wants more
+   * already knows where to go. Scrap grows nowhere - clearing an incident is
+   * the only tap - and that is not something the island tells you. So this
+   * one gets the button, and it points at the Ops Centre.
+   */
+  const scrapIndex = RESOURCE_ORDER.indexOf('scrap');
+  const plusRect: Rect = { x: pillX(scrapIndex) + pill - 19, y: y + barH / 2 - 12, w: 24, h: 24 };
+  const plusOver = hovered(ui, plusRect);
+  const result: ResourceBarResult = { findScrap: plusOver && ui.input.clicked };
+
+  const pcx = plusRect.x + plusRect.w / 2;
+  const pcy = plusRect.y + plusRect.h / 2;
+  ui.shapes.circle(pcx, pcy + 1, plusOver ? 11 : 10, PALETTE.uiShadow, 0.3, 0, 18);
+  ui.shapes.circle(pcx, pcy, plusOver ? 11 : 10, PALETTE.good, 1, plusOver ? 0.5 : 0.2, 18);
+  ui.shapes.rect(pcx - 5, pcy - 1.5, 10, 3, PALETTE.inkOnDark, 1, 0);
+  ui.shapes.rect(pcx - 1.5, pcy - 5, 3, 10, PALETTE.inkOnDark, 1, 0);
 
   const lead = leadCreature(p);
   const bx = x + 14 + badge / 2;
@@ -226,6 +251,9 @@ export function drawResourceBar(ui: UIContext, p: PlayerState, width: number): v
       letterSpacing: 0.6,
     });
   }
+
+  if (result.findScrap) playSfx('open', 0.6);
+  return result;
 }
 
 /** The creature in the ingest slot, or the first one owned. */

@@ -1568,7 +1568,12 @@ export class WorldScene implements Scene {
     const p = this.player;
     const now = Date.now();
 
-    drawResourceBar(ui, p, width);
+    // Scrap is the one currency the island does not grow, so its pill has a
+    // + that points at the only thing that pays it.
+    if (drawResourceBar(ui, p, width).findScrap) {
+      ctx.input.consumeClick();
+      this.goToObjective(ctx, 'ops');
+    }
     const objH = drawObjective(ui, p, now, 70);
     drawNudges(ui, p, now, 70 + objH + 10);
 
