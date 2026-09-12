@@ -1,4 +1,4 @@
-import { clamp, damp } from '../math/scalar.js';
+import { clamp, damp } from '@stackmon/util';
 import type { Vec2 } from '../math/vec2.js';
 
 /**

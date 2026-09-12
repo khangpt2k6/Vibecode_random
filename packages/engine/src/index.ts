@@ -7,6 +7,7 @@
  */
 
 export * from './math/index.js';
+export { ValueNoise2D } from './math/noise.js';
 
 export { World, defineComponent, entityIndex, entityGeneration, Query } from './core/ecs.js';
 export type { Entity, ComponentType } from './core/ecs.js';

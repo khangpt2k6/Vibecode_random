@@ -1,5 +1,5 @@
 import type { ShapeBatch } from './shape-batch.js';
-import type { Rng } from '../math/rng.js';
+import type { Rng } from '@stackmon/util';
 
 /**
  * Particle system.

@@ -1,10 +1,25 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "outDir": "./dist", "rootDir": "./src", "noEmit": false },
-  "include": ["src/**/*"],
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false
+  },
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../engine" },
-    { "path": "../core" },
-    { "path": "../content" }
+    {
+      "path": "../engine"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../content"
+    },
+    {
+      "path": "../util"
+    }
   ]
 }
