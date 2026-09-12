@@ -138,6 +138,10 @@ export class WorldScene implements Scene {
 
   private hoverGx = -1;
   private hoverGy = -1;
+  /** Dev overlay: every creature body in a grid, toggled with G. */
+  private showGallery = false;
+  /** Labels collected during the world pass and drawn together at the end. */
+  private pendingLabels: Array<{ x: number; y: number; text: string; type: TypeId }> = [];
 
   enter(ctx: SceneContext): void {
     this.font = new Font(ctx.renderer.gl, { size: 17, weight: 700 });
@@ -517,6 +521,8 @@ export class WorldScene implements Scene {
       camera.zoomAt(input.pointer.position, Math.pow(0.999, input.pointer.wheel));
     }
 
+    if (input.wasPressed('KeyG')) this.showGallery = !this.showGallery;
+
     const world = camera.screenToWorld(input.pointer.position);
     const picked = screenToGridOnHeightmap(world, this.heightAt, MAX_HEIGHT, DEFAULT_ISO);
     this.hoverGx = picked ? picked.gx : -1;
@@ -553,10 +559,12 @@ export class WorldScene implements Scene {
 
     r.beginLayer('world');
     this.renderWorld(ctx);
+    this.drawLabels(ctx);
     r.beginLayer('effects');
     this.particles.render(r.shapes);
     r.beginLayer('ui');
     this.renderHud(ctx);
+    if (this.showGallery) this.renderGallery(ctx);
     r.endLayer();
   }
 
@@ -659,18 +667,31 @@ export class WorldScene implements Scene {
     };
     drawCreature(shapes, visual, this.time);
 
-    // Name plate only when the camera is close enough for it to be legible.
-    // Labels on everything at every zoom is how a world turns into a list.
+    // Name plates only when the camera is close enough for them to be
+    // legible - labels on everything at every zoom turns a world into a list.
+    // They are queued rather than drawn here: interleaving a plate (shapes)
+    // and its text (quads) per creature forced a draw call per creature, and
+    // drawing all plates then all text at the end costs two.
     if (camera.zoom > 0.85) {
-      const width = this.fontSmall.measure(w.label);
-      drawNamePlate(shapes, p.x, p.y - 42, width, w.type);
-      drawText(quads, this.fontSmall, w.label, p.x, p.y - 41, {
+      this.pendingLabels.push({ x: p.x, y: p.y - 42, text: w.label, type: w.type });
+    }
+    void quads;
+  }
+
+  private drawLabels(ctx: SceneContext): void {
+    const { shapes, quads } = ctx.renderer;
+    for (const l of this.pendingLabels) {
+      drawNamePlate(shapes, l.x, l.y, this.fontSmall.measure(l.text), l.type);
+    }
+    for (const l of this.pendingLabels) {
+      drawText(quads, this.fontSmall, l.text, l.x, l.y + 1, {
         color: PALETTE.ink,
         align: 'center',
         scale: 0.92,
         letterSpacing: 0.6,
       });
     }
+    this.pendingLabels.length = 0;
   }
 
   private drawProp(shapes: SceneContext['renderer']['shapes'], prop: Prop): void {
@@ -694,6 +715,56 @@ export class WorldScene implements Scene {
         drawGrassTuft(shapes, prop.anchor);
         break;
     }
+  }
+
+  /**
+   * Every creature body, laid out in a grid over the world.
+   *
+   * A development view first, but it is also the bones of the codex screen:
+   * the same pose contract, the same bodies, just standing still.
+   */
+  private renderGallery(ctx: SceneContext): void {
+    const { shapes, quads } = ctx.renderer;
+    const { width, height } = ctx.renderer.ctx;
+    shapes.rect(0, 0, width, height, PALETTE.uiShadow, 0.55, 0);
+
+    const all: Array<[TypeId, string, string]> = [];
+    for (const type of TYPE_IDS) {
+      for (const [id, label] of TECH_BY_TYPE[type]) all.push([type, id, label]);
+    }
+    const cols = 8;
+    const cellW = Math.min(150, (width - 60) / cols);
+    const cellH = 150;
+    const x0 = (width - cellW * cols) / 2;
+    const y0 = (height - cellH * Math.ceil(all.length / cols)) / 2 + 20;
+
+    for (let i = 0; i < all.length; i++) {
+      const [type, id, label] = all[i]!;
+      const cx = x0 + (i % cols) * cellW + cellW / 2;
+      const cy = y0 + Math.floor(i / cols) * cellH + cellH * 0.66;
+      shapes.roundedRect(cx - cellW / 2 + 6, cy - cellH * 0.62, cellW - 12, cellH - 12, 14, PALETTE.uiPanel, 0.95, 0);
+      shapes.roundedRect(cx - cellW / 2 + 6, cy - cellH * 0.62, cellW - 12, 6, 3, TYPE_COLORS[type], 1, 0);
+      drawCreature(shapes, {
+        creatureId: id,
+        type,
+        x: cx,
+        y: cy,
+        scale: 1.35,
+        phase: i * 1.7,
+        facing: i % 2 === 0 ? 1 : -1,
+        moving: 0,
+      }, this.time);
+      drawText(quads, this.fontSmall, label, cx, cy + 14, {
+        color: PALETTE.ink,
+        align: 'center',
+        letterSpacing: 1,
+      });
+    }
+    drawText(quads, this.font, 'CODEX  -  press G to close', width / 2, y0 - 46, {
+      color: PALETTE.uiPanel,
+      align: 'center',
+      letterSpacing: 2,
+    });
   }
 
   // ------------------------------------------------------------------- HUD
