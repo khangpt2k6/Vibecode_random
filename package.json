@@ -1,0 +1,28 @@
+{
+  "name": "stackmon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "STACKMON - The Distributed Realm. A creature-collecting, base-building RPG where the creatures are real technologies and their stats are their real trade-offs.",
+  "workspaces": [
+    "packages/engine",
+    "packages/core",
+    "packages/content",
+    "packages/game",
+    "packages/tools"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @stackmon/game",
+    "build": "npm run build -w @stackmon/engine && npm run build -w @stackmon/core && npm run build -w @stackmon/content && npm run build -w @stackmon/game",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b --pretty",
+    "preview": "npm run preview -w @stackmon/game"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8",
+    "@types/node": "^22.10.5"
+  }
+}

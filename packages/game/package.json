@@ -1,0 +1,15 @@
+{
+  "name": "@stackmon/game",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "@stackmon/engine": "*",
+    "@stackmon/core": "*",
+    "@stackmon/content": "*"
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vite/
+*.log
+.DS_Store
+coverage/
+.turbo/
+*.tsbuildinfo
+docs/superpowers/
+.env
+.env.local
+playwright-report/
+test-results/
+screenshots/
