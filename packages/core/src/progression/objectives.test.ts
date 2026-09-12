@@ -7,6 +7,7 @@ import {
   OBJECTIVES,
   currentObjective,
   nudges,
+  objectivePosition,
   objectivesDone,
 } from './objectives.js';
 
@@ -57,6 +58,16 @@ describe('objectives', () => {
 
     p.stats.victories = 1;
     expect(currentObjective(p, T0)?.id).toBe('power-grid');
+  });
+
+  it('the displayed position tracks the current goal, not the count finished', () => {
+    // A player who caught and won before being asked has three done but is
+    // still on goal one. Showing "4 / 12" next to "Look around" reads as a bug.
+    const p = newPlayer('t');
+    p.stats = { battles: 2, victories: 1, opsServed: 0, opsDropped: 0, captures: 1 };
+    expect(currentObjective(p, T0)?.id).toBe('look-around');
+    expect(objectivePosition(p, T0)).toBe(1);
+    expect(objectivesDone(p, T0)).toBeGreaterThan(1);
   });
 
   it('never points at something already done, even on a save that skipped ahead', () => {

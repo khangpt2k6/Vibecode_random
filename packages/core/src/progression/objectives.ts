@@ -159,6 +159,19 @@ export function objectivesDone(p: PlayerState, now: number): number {
 }
 
 /**
+ * 1-based position of the current objective in the chain.
+ *
+ * Not the same as the number completed: a player can finish a later goal
+ * early - catching something before being asked to - and then the count and
+ * the position disagree. Showing the count next to the first unfinished title
+ * reads as a bug, because it is one.
+ */
+export function objectivePosition(p: PlayerState, now: number): number {
+  const i = OBJECTIVES.findIndex((o) => !o.done(p, now));
+  return i < 0 ? OBJECTIVES.length : i + 1;
+}
+
+/**
  * Hints that fire on the current world state rather than on progress.
  *
  * These are the "you have crops ready" nudges: true right now, gone once

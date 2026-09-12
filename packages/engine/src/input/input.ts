@@ -249,6 +249,24 @@ export class Input {
     return this.edgesVisible && this.pointerReleased && !this.pointerDragging;
   }
 
+  /**
+   * Swallow the current click for the rest of the frame.
+   *
+   * Call this from anything that reacts to a click by changing what is on
+   * screen. Without it, the click that opens a panel is still live when that
+   * panel first draws, and whatever now sits under the cursor consumes it -
+   * so a menu opens and instantly picks an option the player never saw.
+   */
+  consumeClick(): void {
+    this.pointerReleased = false;
+    this.pointerPressed = false;
+  }
+
+  /** Swallow a key edge, for the same reason. */
+  consumeKey(code: string): void {
+    this.pressedKeys.delete(code);
+  }
+
   /** Clear per-tick edge state. Call once at the end of each simulation tick. */
   endFrame(): void {
     this.pressedKeys.clear();

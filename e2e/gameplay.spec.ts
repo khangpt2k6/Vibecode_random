@@ -240,6 +240,10 @@ test.describe('build and farm', () => {
     expect(plot, 'a plot should exist once the grid is up').not.toBeNull();
 
     // Click the plot: the crop picker opens.
+    await moveTo(page, plot!.x, plot!.y);
+    const hoverPlot = await page.evaluate(() => window.stackmon.scenes.current.hoverPlot);
+    expect(hoverPlot, 'the plot under the pointer should be highlighted').toBe(0);
+
     await clickAt(page, plot!.x, plot!.y);
     expect(await page.evaluate(() => window.stackmon.scenes.current.overlay)).toBe('plant');
 

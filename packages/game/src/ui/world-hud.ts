@@ -12,7 +12,7 @@ import {
   buildProgress,
   currentObjective,
   nudges,
-  objectivesDone,
+  objectivePosition,
   OBJECTIVES,
   rushCost,
   type PlayerState,
@@ -101,7 +101,7 @@ export function drawObjective(ui: UIContext, p: PlayerState, now: number, y: num
   const h = 78 + (whyLines.length + howLines.length) * ui.fontSmall.lineHeight;
 
   panel(ui, { x, y, w, h }, PALETTE.warn);
-  drawText(ui.quads, ui.fontSmall, `NEXT  -  ${objectivesDone(p, now) + 1} / ${OBJECTIVES.length}`, x + 20, y + 14, {
+  drawText(ui.quads, ui.fontSmall, `NEXT  -  ${objectivePosition(p, now)} / ${OBJECTIVES.length}`, x + 20, y + 14, {
     color: PALETTE.inkSoft,
     letterSpacing: 1.6,
   });

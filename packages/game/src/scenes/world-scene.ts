@@ -780,6 +780,11 @@ export class WorldScene implements Scene {
           if (!t || t.terrain === 'water' || t.terrain === 'rock' || t.path) continue;
           if (t.height !== hallHeight) continue;
           if (this.structures.some((st) => st.gx === gx && st.gy === gy)) continue;
+          // Nothing in front may be tall enough to cover it. A tile `n` steps
+          // further along both axes and `2n` elevations up lands on exactly
+          // the same pixels, so a plot at the foot of a rise is drawn, looks
+          // fine, and cannot be clicked - the pick resolves to the hill.
+          if (occluded(gx, gy, hallHeight, this.heightAt)) continue;
           this.plotTiles.push({ gx, gy });
           if (this.plotTiles.length >= 40) break;
         }
@@ -947,6 +952,8 @@ export class WorldScene implements Scene {
 
     if (input.clicked && this.hoverPlot >= 0) {
       this.usePlot(this.hoverPlot);
+      // If that opened a panel, the click must not reach it too.
+      if (this.overlay !== 'none') input.consumeClick();
       return;
     }
 
@@ -1352,9 +1359,10 @@ export class WorldScene implements Scene {
     drawNudges(ui, p, now, 70 + objH + 10);
 
     const bar = drawToolbar(ui, height);
-    if (bar.openBuild) this.overlay = 'build';
-    if (bar.openCodex) this.overlay = 'codex';
-    if (bar.openHelp) this.overlay = 'help';
+    if (bar.openBuild || bar.openCodex || bar.openHelp) {
+      this.overlay = bar.openBuild ? 'build' : bar.openCodex ? 'codex' : 'help';
+      ctx.input.consumeClick();
+    }
 
     // Toasts, projected from world space.
     for (const t of this.toasts) {
@@ -1450,6 +1458,24 @@ export class WorldScene implements Scene {
       { color: PALETTE.uiPanel, alpha: 0.92, align: 'center', letterSpacing: 1 },
     );
   }
+}
+
+/**
+ * Is anything in front of this tile tall enough to cover it?
+ *
+ * In this projection a tile `n` steps further along both axes and exactly
+ * `2n` elevations higher occupies the same pixels and is drawn later, so it
+ * wins both the eye and the pick. Two steps is far enough to check: a hill
+ * three tiles away would have to be six elevations taller than the ground,
+ * which the terrain generator cannot produce.
+ */
+function occluded(
+  gx: number, gy: number, height: number, heightAt: (x: number, y: number) => number,
+): boolean {
+  for (let n = 1; n <= 2; n++) {
+    if (heightAt(gx + n, gy + n) >= height + n * 2) return true;
+  }
+  return false;
 }
 
 /** Per-tile colour: terrain base, shifted by elevation and a noise jitter. */

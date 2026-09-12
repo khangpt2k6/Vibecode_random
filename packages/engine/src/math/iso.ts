@@ -53,7 +53,13 @@ export function gridToScreen(p: GridPos, cfg: IsoConfig = DEFAULT_ISO): Vec2 {
 /**
  * Screen -> grid, assuming ground level (h = 0).
  *
- * Picking a tile on uneven terrain needs a height-aware search; this is the
+ * Returns CONTINUOUS grid coordinates, where whole numbers land on tile
+ * centres because that is what `gridToScreen` projects. Rounding, not
+ * flooring, is therefore what turns this into a tile index - flooring treats
+ * the value as a corner and lands half a tile up-left of the truth, which
+ * looks like a rounding glitch and is actually an off-by-half-a-tile.
+ *
+ * Picking on uneven terrain needs a height-aware search; this is the
  * flat-ground fast path that every pointer interaction starts from.
  */
 export function screenToGrid(s: Vec2, cfg: IsoConfig = DEFAULT_ISO): GridPos {
@@ -84,8 +90,9 @@ export function screenToGridOnHeightmap(
   for (let h = maxHeight; h >= 0; h--) {
     const lifted: Vec2 = { x: s.x, y: s.y + h * cfg.elevation };
     const g = screenToGrid(lifted, cfg);
-    const gx = Math.floor(g.gx);
-    const gy = Math.floor(g.gy);
+    // Round: a whole grid coordinate is the centre of a tile, not its corner.
+    const gx = Math.round(g.gx);
+    const gy = Math.round(g.gy);
     if (heightAt(gx, gy) === h) return { gx, gy, h };
   }
   return null;
