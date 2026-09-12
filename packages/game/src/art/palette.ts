@@ -65,6 +65,14 @@ export const PALETTE = {
   metalDeep: 0xa5b0bd,
   glass: 0x8fd8f2,
 
+  // --- dark glass UI ---
+  // The default HUD surface. Deep blue rather than neutral grey, so it sits
+  // in the same light as the world instead of floating above it as chrome.
+  glass01: 0x14243c,
+  glass02: 0x0d1a2e,
+  glassInk: 0xeaf3ff,
+  glassInkDim: 0x8fa8c6,
+
   // --- text and UI ---
   ink: 0x2f3b4a,
   inkSoft: 0x5d6b7d,

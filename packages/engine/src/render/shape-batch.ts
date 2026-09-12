@@ -602,6 +602,80 @@ export class ShapeBatch {
     }
   }
 
+
+  /**
+   * A rounded parallelogram: a rectangle sheared along x.
+   *
+   * `skew` is how far the top edge slides right of the bottom edge. This is
+   * the workhorse of the interface. A screen built from axis-aligned
+   * rectangles reads as a form; the same information in sheared cards reads
+   * as a game, and it costs one extra number per shape.
+   *
+   * Corners are cut rather than arced. At the sizes a HUD uses, a chamfer and
+   * a fillet are indistinguishable, and a chamfer is four vertices instead of
+   * twenty.
+   */
+  slantRect(
+    x: number, y: number, w: number, h: number, skew: number, cut: number,
+    rgb: number, alpha = 1, emissive = 0,
+  ): void {
+    const c = Math.max(0, Math.min(cut, h * 0.5, w * 0.5));
+    const bl = x;
+    const br = x + w;
+    const tl = x + skew;
+    const tr = x + w + skew;
+    const top = y;
+    const bottom = y + h;
+
+    this.polygon(
+      [
+        tl + c, top,
+        tr - c, top,
+        tr, top + c,
+        br, bottom - c,
+        br - c, bottom,
+        bl + c, bottom,
+        bl, bottom - c,
+        tl, top + c,
+      ],
+      rgb, alpha, emissive,
+    );
+  }
+
+  /**
+   * A slanted panel with a soft drop shadow under it.
+   *
+   * The shadow is two offset copies rather than a blur, which at this size is
+   * indistinguishable and costs two draws instead of a render target.
+   */
+  slantPanel(
+    x: number, y: number, w: number, h: number, skew: number, cut: number,
+    rgb: number, alpha = 1, shadow = 0x0b1b2e,
+  ): void {
+    this.slantRect(x - 1, y + 5, w + 2, h, skew, cut, shadow, alpha * 0.18, 0);
+    this.slantRect(x, y + 2, w, h, skew, cut, shadow, alpha * 0.22, 0);
+    this.slantRect(x, y, w, h, skew, cut, rgb, alpha, 0);
+  }
+
+  /**
+   * A thin capsule meter.
+   *
+   * Track, fill, and a highlight along the top of the fill. The highlight is
+   * what stops a flat bar reading as a progress widget from a settings dialog.
+   */
+  capsule(
+    x: number, y: number, w: number, h: number, fraction: number,
+    fill: number, track: number, trackAlpha = 0.55,
+  ): void {
+    const r = h * 0.5;
+    this.roundedRect(x, y, w, h, r, track, trackAlpha, 0);
+    const f = Math.max(0, Math.min(1, fraction));
+    if (f <= 0) return;
+    const fw = Math.max(h, w * f);
+    this.roundedRect(x, y, fw, h, r, fill, 1, 0);
+    this.roundedRect(x + r * 0.5, y + h * 0.22, Math.max(1, fw - r), h * 0.28, h * 0.14, 0xffffff, 0.28, 0);
+  }
+
   flush(): void {
     if (this.indexCount === 0 || this.flushing) return;
     this.flushing = true;

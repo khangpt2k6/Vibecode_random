@@ -61,6 +61,8 @@ export interface PlayerState {
   seen: string[];
   /** Skill ids unlocked by beating incidents. */
   unlockedSkills: string[];
+  /** Objective ids whose reward has already been paid. */
+  claimedObjectives: string[];
 
   stats: {
     battles: number;
@@ -84,6 +86,7 @@ export function newPlayer(seed: string): PlayerState {
     incidents: {},
     seen: [],
     unlockedSkills: [],
+    claimedObjectives: [],
     stats: { battles: 0, victories: 0, opsServed: 0, opsDropped: 0, captures: 0 },
   };
 }
@@ -344,6 +347,7 @@ export function normalise(p: PlayerState): PlayerState {
   p.base.built ??= [];
   p.base.seenGates ??= [];
   p.base.building ??= null;
+  p.claimedObjectives ??= [];
 
   const uids = new Set(p.roster.map((c) => c.uid));
   p.party = Array.from({ length: MAX_PARTY }, (_, i) => {

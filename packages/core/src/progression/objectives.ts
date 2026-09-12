@@ -1,4 +1,4 @@
-import { getBuilding, unlockedTier } from '@stackmon/content';
+import { CROPS, getBuilding, unlockedTier } from '@stackmon/content';
 import type { PlayerState } from './player.js';
 import { isReady } from './base.js';
 
@@ -16,6 +16,17 @@ import { isReady } from './base.js';
  * something, build the grid, farm, then the real build tree opens up.
  */
 
+/**
+ * The smallest thing scrap can still buy.
+ *
+ * Read off the crop table rather than written as a number, so the warning
+ * below stays true if seed prices move.
+ */
+const CHEAPEST_SEED_COST = Math.min(...CROPS.map((c) => c.seedCost.scrap ?? 0));
+
+/** Where the "GO" button on a quest should send the player. */
+export type ObjectiveTarget = 'wild' | 'ops' | 'plot' | 'build' | 'codex';
+
 export interface Objective {
   id: string;
   /** What the player is asked to do. Imperative, short. */
@@ -28,19 +39,30 @@ export interface Objective {
   done: (p: PlayerState, now: number) => boolean;
   /** 0..1 for a progress bar, when the goal is countable. */
   progress?: (p: PlayerState, now: number) => number;
+  /** "2 / 6" under the progress bar, when a count reads better than a ratio. */
+  count?: (p: PlayerState, now: number) => { have: number; need: number };
+  /** Paid once, the first time it is seen complete. */
+  reward: { xp: number; scrap: number };
+  /** What the quest log's GO button does. */
+  target: ObjectiveTarget;
 }
 
 export const OBJECTIVES: Objective[] = [
   {
     id: 'look-around',
+    reward: { xp: 20, scrap: 25 },
+    target: 'codex',
     title: 'Look around the island',
     why: 'Every creature here is a real technology, and its stats are its real trade-offs.',
     how: 'Drag or use WASD to pan, scroll to zoom. Press G to open the codex.',
     done: (p) => p.seen.length > 5,
     progress: (p) => Math.min(1, p.seen.length / 6),
+    count: (p) => ({ have: Math.min(6, p.seen.length), need: 6 }),
   },
   {
     id: 'first-capture',
+    reward: { xp: 40, scrap: 40 },
+    target: 'wild',
     title: 'Capture a wild technology',
     why: 'Your roster is your stack. You cannot build a pipeline out of things you do not have.',
     how: 'Hover a wandering creature and click it. Capturing costs scrap.',
@@ -48,6 +70,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'first-battle',
+    reward: { xp: 40, scrap: 30 },
+    target: 'ops',
     title: 'Respond to an incident',
     why: 'Incidents are real production failures. Beating one means you built something that survives it.',
     how: 'Click the Ops Centre in the middle of the island.',
@@ -55,6 +79,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'first-win',
+    reward: { xp: 80, scrap: 60 },
+    target: 'ops',
     title: 'Resolve an incident',
     why: 'You win by serving traffic through it, not by attacking it. Throughput is the weapon.',
     how: 'Keep the pipeline flowing. Buffer at INGEST so a spike does not become dropped requests.',
@@ -62,6 +88,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'power-grid',
+    reward: { xp: 60, scrap: 40 },
+    target: 'build',
     title: 'Build the Power Grid',
     why: 'Nothing runs without power. It opens your first farm plots.',
     how: 'Press B to open the build menu. The grid costs scrap, which incidents pay out.',
@@ -69,6 +97,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'first-plant',
+    reward: { xp: 50, scrap: 30 },
+    target: 'plot',
     title: 'Plant something',
     why: 'Compute, memory, bandwidth and storage are the four currencies of every system you will ever build.',
     how: 'Click an empty plot next to the Ops Centre and pick a crop.',
@@ -76,6 +106,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'first-harvest',
+    reward: { xp: 50, scrap: 35 },
+    target: 'plot',
     title: 'Harvest a crop',
     why: 'Resources are what the build tree spends. Everything above the grid needs them.',
     how: 'Click a plot once it is ready. Crops keep growing while the tab is closed.',
@@ -83,6 +115,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'runtime-forge',
+    reward: { xp: 90, scrap: 60 },
+    target: 'build',
     title: 'Build the Runtime Forge',
     why: 'A runtime is the floor of every stack. Before you have one you have source code and a wish.',
     how: 'Press B. It needs compute and memory, so farm those first.',
@@ -90,6 +124,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'branch-out',
+    reward: { xp: 110, scrap: 70 },
+    target: 'build',
     title: 'Build a Data Vault or a Message Broker',
     why: 'Storage and streaming are the two branches every architecture grows from. Pick one.',
     how: 'Press B. Both only need the Power Grid, so either is open to you now.',
@@ -97,6 +133,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'tier-two',
+    reward: { xp: 120, scrap: 80 },
+    target: 'build',
     title: 'Unlock tier 2 incidents',
     why: 'Tier 1 is raw volume. Tier 2 is corruption, partitions and leaks - different problems, different stacks.',
     how: 'Build the Message Broker.',
@@ -104,6 +142,8 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'containers',
+    reward: { xp: 160, scrap: 110 },
+    target: 'build',
     title: 'Reach the Container Yard',
     why: 'Registry, then containers, then orchestration. That order is not arbitrary - each one needs the last.',
     how: 'Image Registry needs the Runtime Forge. The Container Yard needs the Registry.',
@@ -111,11 +151,14 @@ export const OBJECTIVES: Objective[] = [
   },
   {
     id: 'six-families',
+    reward: { xp: 220, scrap: 150 },
+    target: 'wild',
     title: 'Own a creature from every family',
     why: 'No single family answers every incident. Bench depth is what lets you swap mid-fight.',
     how: 'Keep capturing. The codex (G) shows which families you are missing.',
     done: (p, _now) => familiesOwned(p) >= 6,
     progress: (p) => familiesOwned(p) / 6,
+    count: (p) => ({ have: familiesOwned(p), need: 6 }),
   },
 ];
 
@@ -171,6 +214,50 @@ export function objectivePosition(p: PlayerState, now: number): number {
   return i < 0 ? OBJECTIVES.length : i + 1;
 }
 
+export interface ClaimedObjective {
+  id: string;
+  title: string;
+  xp: number;
+  scrap: number;
+}
+
+/**
+ * Pay out every finished objective that has not been paid yet.
+ *
+ * Objectives are derived from state, so "finished" is recomputed constantly
+ * and cannot itself carry a paid flag. The list of claimed ids lives on the
+ * player instead, which also means a save from before rewards existed pays
+ * out its backlog once on load rather than silently swallowing it.
+ *
+ * XP is spread over the roster rather than going to one creature, because a
+ * quest is something the whole stack did.
+ */
+export function claimObjectiveRewards(p: PlayerState, now: number): ClaimedObjective[] {
+  p.claimedObjectives ??= [];
+  const claimed: ClaimedObjective[] = [];
+
+  for (const o of OBJECTIVES) {
+    if (p.claimedObjectives.includes(o.id)) continue;
+    if (!o.done(p, now)) continue;
+    p.claimedObjectives.push(o.id);
+    p.resources.scrap += o.reward.scrap;
+    claimed.push({ id: o.id, title: o.title, xp: o.reward.xp, scrap: o.reward.scrap });
+  }
+  return claimed;
+}
+
+/** Total scrap and XP still unclaimed, for the quest log header. */
+export function outstandingRewards(p: PlayerState, now: number): { xp: number; scrap: number } {
+  let xp = 0;
+  let scrap = 0;
+  for (const o of OBJECTIVES) {
+    if (o.done(p, now)) continue;
+    xp += o.reward.xp;
+    scrap += o.reward.scrap;
+  }
+  return { xp, scrap };
+}
+
 /**
  * Hints that fire on the current world state rather than on progress.
  *
@@ -203,6 +290,18 @@ export function nudges(p: PlayerState, now: number): Nudge[] {
 
   if (p.party.some((u) => u === null)) {
     out.push({ id: 'party', text: 'An empty pipeline slot - nothing flows through a gap', tone: 'warn' });
+  }
+
+  // The one dead end the game can actually walk a player into. Scrap pays for
+  // captures, seeds and structures, and nothing on the island grows it - the
+  // only tap is clearing an incident. A player who spends down to nothing has
+  // no way to find that out from the world, so it has to be said here.
+  if (p.resources.scrap < CHEAPEST_SEED_COST) {
+    out.push({
+      id: 'broke',
+      text: 'Out of scrap - clear an incident at the Ops Centre to earn more',
+      tone: 'warn',
+    });
   }
 
   return out;

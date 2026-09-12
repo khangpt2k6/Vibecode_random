@@ -247,18 +247,34 @@ test.describe('build and farm', () => {
     await clickAt(page, plot!.x, plot!.y);
     expect(await page.evaluate(() => window.stackmon.scenes.current.overlay)).toBe('plant');
 
-    const scrapBefore = (await player(page)).resources.scrap;
     await page.evaluate(() => window.stackmon.scenes.current.doPlant('cpu-cycles'));
     await frames(page, 3);
 
     const planted = await page.evaluate(() => ({
       crop: window.player.base.plots[0].cropId,
-      scrap: window.player.resources.scrap,
       overlay: window.stackmon.scenes.current.overlay,
     }));
     expect(planted.crop).toBe('cpu-cycles');
-    expect(planted.scrap).toBeLessThan(scrapBefore);
     expect(planted.overlay).toBe('none');
+
+    // Seeds are paid for out of scrap, but so is the mission that finishing
+    // this plant completes - and the payout lands in the same few frames, so
+    // measuring the first plant measures both at once. The second plot has no
+    // mission attached to it, which makes the seed cost the only thing moving.
+    await settle(page);
+    const plot2 = await plotAt(page, 1);
+    expect(plot2, 'a second plot should exist').not.toBeNull();
+    const scrapBefore = (await player(page)).resources.scrap;
+    await clickAt(page, plot2!.x, plot2!.y);
+    await page.evaluate(() => window.stackmon.scenes.current.doPlant('cpu-cycles'));
+    await frames(page, 3);
+
+    const second = await page.evaluate(() => ({
+      crop: window.player.base.plots[1].cropId,
+      scrap: window.player.resources.scrap,
+    }));
+    expect(second.crop).toBe('cpu-cycles');
+    expect(second.scrap).toBeLessThan(scrapBefore);
 
     // Fast-forward the crop and harvest by clicking it again.
     await page.evaluate(() => {

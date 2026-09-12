@@ -50,6 +50,10 @@ import {
   applyBattle,
   attemptCapture,
   battleLineup,
+  claimObjectiveRewards,
+  grantXp,
+  objectivesDone,
+  OBJECTIVES,
   buildProgress,
   captureChance,
   captureCost,
@@ -76,6 +80,7 @@ import {
   drawResourceBar,
   drawToolbar,
 } from '../ui/world-hud.js';
+import { drawQuestLog, questLogOverflow } from '../ui/quest-log.js';
 
 /**
  * The overworld.
@@ -277,7 +282,9 @@ export class WorldScene implements Scene {
   private hoverGx = -1;
   private hoverGy = -1;
   /** Which full-screen overlay is open, if any. */
-  private overlay: 'none' | 'codex' | 'build' | 'help' | 'plant' = 'none';
+  private overlay: 'none' | 'codex' | 'build' | 'help' | 'plant' | 'quests' = 'none';
+  /** Scroll offset inside the quest log. */
+  private questScroll = 0;
   /** Plot the plant menu is choosing a crop for. */
   private plantingPlot = -1;
   /** Grid tiles the farm plots occupy, laid out around the Ops Centre. */
@@ -459,6 +466,62 @@ export class WorldScene implements Scene {
 
   private toast(x: number, y: number, text: string, color: number): void {
     this.toasts.push({ x, y, text, color, life: 2.6 });
+  }
+
+  /**
+   * The quest log's GO button.
+   *
+   * Two of these open a panel; the rest move the camera onto the thing the
+   * mission is about and leave the player there. Pointing at something is a
+   * much better answer to "where do I do this" than a sentence describing
+   * where it is.
+   */
+  private goToObjective(ctx: SceneContext, target: string): void {
+    const camera = ctx.renderer.camera;
+    const focus = (gx: number, gy: number, zoom: number, label: string, color: number) => {
+      const h = Math.max(0, this.heightAt(Math.round(gx), Math.round(gy)));
+      const p = gridToScreen({ gx, gy, h }, DEFAULT_ISO);
+      camera.moveTo(p.x, p.y);
+      camera.setZoom(zoom);
+      this.overlay = 'none';
+      this.toast(p.x, p.y - 70, label, color);
+    };
+
+    switch (target) {
+      case 'build':
+        this.overlay = 'build';
+        return;
+      case 'codex':
+        this.overlay = 'codex';
+        return;
+      case 'ops':
+        focus(this.hallAt.gx, this.hallAt.gy, 1.3, 'Click the Ops Centre to fight', PALETTE.info);
+        return;
+      case 'plot': {
+        const idx = this.player.base.plots.findIndex((x) => x.cropId === null);
+        const tile = this.plotTile(Math.max(0, idx));
+        if (!tile) {
+          this.overlay = 'build';
+          return;
+        }
+        focus(tile.gx, tile.gy, 1.6, 'Click a plot to plant', PALETTE.good);
+        return;
+      }
+      case 'wild': {
+        // Nearest to the camera, so GO never throws the player across the map.
+        const alive = this.wild.filter((w) => w.leaving === 0);
+        if (alive.length === 0) return;
+        const target0 = alive.reduce((best, w) => {
+          const p = gridToScreen({ gx: w.gx, gy: w.gy, h: 0 }, DEFAULT_ISO);
+          const bp = gridToScreen({ gx: best.gx, gy: best.gy, h: 0 }, DEFAULT_ISO);
+          const d = Math.hypot(p.x - camera.renderX, p.y - camera.renderY);
+          const bd = Math.hypot(bp.x - camera.renderX, bp.y - camera.renderY);
+          return d < bd ? w : best;
+        });
+        focus(target0.gx, target0.gy, 1.6, `Click ${target0.label} to capture`, PALETTE.good);
+        return;
+      }
+    }
   }
 
   /** Click a plot: harvest if ready, otherwise open the crop picker. */
@@ -991,6 +1054,7 @@ export class WorldScene implements Scene {
     const { camera } = ctx.renderer;
     const { input } = ctx;
 
+    if (input.wasPressed('KeyJ')) this.overlay = this.overlay === 'quests' ? 'none' : 'quests';
     if (input.wasPressed('KeyG')) this.overlay = this.overlay === 'codex' ? 'none' : 'codex';
     if (input.wasPressed('KeyB')) this.overlay = this.overlay === 'build' ? 'none' : 'build';
     if (input.wasPressed('KeyH')) this.overlay = this.overlay === 'help' ? 'none' : 'help';
@@ -1000,6 +1064,10 @@ export class WorldScene implements Scene {
     // that reads it. Sitting below the camera block meant dragging across an
     // open menu still panned the world underneath it.
     if (this.overlay !== 'none') {
+      if (this.overlay === 'quests' && input.pointer.wheel !== 0) {
+        const max = questLogOverflow(ctx.renderer.ctx.height);
+        this.questScroll = Math.max(0, Math.min(max, this.questScroll + input.pointer.wheel * 0.5));
+      }
       this.hoverWild = null;
       this.hoverPlot = -1;
       this.hoverGx = -1;
@@ -1019,6 +1087,17 @@ export class WorldScene implements Scene {
     }
     if (input.pointer.wheel !== 0) {
       camera.zoomAt(input.pointer.position, Math.pow(0.999, input.pointer.wheel));
+    }
+
+    // Missions pay out the moment they are satisfied, wherever that happened.
+    for (const claim of claimObjectiveRewards(this.player, Date.now())) {
+      // XP goes to the whole roster: a mission is something the stack did.
+      const share = Math.max(1, Math.round(claim.xp / Math.max(1, this.player.roster.length)));
+      for (const c of this.player.roster) grantXp(c, share);
+      savePlayer(this.player);
+      const hall = gridToScreen({ gx: this.hallAt.gx, gy: this.hallAt.gy, h: 3 }, DEFAULT_ISO);
+      this.toast(hall.x, hall.y - 96, `MISSION: ${claim.title}`, PALETTE.flowerYellow);
+      this.toast(hall.x, hall.y - 74, `+${claim.scrap} scrap  +${claim.xp} xp`, PALETTE.good);
     }
 
     // Construction finishes on wall-clock time, including while away.
@@ -1377,6 +1456,15 @@ export class WorldScene implements Scene {
     };
 
     switch (this.overlay) {
+      case 'quests': {
+        const r = drawQuestLog(ui, this.player, Date.now(), width, height, this.questScroll);
+        if (r.close) this.overlay = 'none';
+        if (r.goto) {
+          this.goToObjective(ctx, r.goto);
+          ctx.input.consumeClick();
+        }
+        break;
+      }
       case 'codex':
         this.renderGallery(ctx);
         break;
@@ -1484,9 +1572,19 @@ export class WorldScene implements Scene {
     const objH = drawObjective(ui, p, now, 70);
     drawNudges(ui, p, now, 70 + objH + 10);
 
-    const bar = drawToolbar(ui, height);
-    if (bar.openBuild || bar.openCodex || bar.openHelp) {
-      this.overlay = bar.openBuild ? 'build' : bar.openCodex ? 'codex' : 'help';
+    const toolbar = drawToolbar(ui, height, {
+      questsDone: objectivesDone(p, now),
+      questsTotal: OBJECTIVES.length,
+    });
+    if (toolbar.openQuests || toolbar.openBuild || toolbar.openCodex || toolbar.openHelp) {
+      this.overlay = toolbar.openQuests
+        ? 'quests'
+        : toolbar.openBuild
+          ? 'build'
+          : toolbar.openCodex
+            ? 'codex'
+            : 'help';
+      if (toolbar.openQuests) this.questScroll = 0;
       ctx.input.consumeClick();
     }
 

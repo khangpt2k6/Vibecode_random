@@ -24,7 +24,9 @@ import {
 import { PALETTE, shade, type TypeId } from '../art/palette.js';
 import { drawIconBadge } from '../art/icons.js';
 import { propAtlas } from '../art/atlas.js';
+import { playSfx } from '../audio/game-audio.js';
 import { button, hovered, panel, paragraph, tag, tagRight, type Rect, type UIContext } from './widgets.js';
+import { GLYPHS } from './glyphs.js';
 
 /**
  * The overworld HUD.
@@ -65,7 +67,7 @@ export interface HudResult {
  * island, so the HUD looks like it belongs to the world rather than sitting
  * on top of it.
  */
-const RESOURCE_ICONS: Record<ResourceId, string> = {
+export const RESOURCE_ICONS: Record<ResourceId, string> = {
   scrap: 'survival/resource-stone#0',
   compute: 'space/machine_generatorLarge#0',
   memory: 'space/machine_barrel#0',
@@ -81,13 +83,68 @@ const RESOURCE_ICONS: Record<ResourceId, string> = {
  * the game is making. So each one is the machine that would actually produce
  * it: a generator, a tank, an aerial, a crate, a dish.
  */
-const CROP_ICONS: Record<string, string> = {
+export const CROP_ICONS: Record<string, string> = {
   'cpu-cycles': 'space/machine_generatorLarge#0',
   'ram-bank': 'space/machine_barrel#0',
   'fibre-line': 'space/machine_wireless#0',
   'disk-array': 'survival/chest#0',
   'log-stream': 'space/satelliteDish_detailed#0',
 };
+
+/**
+ * A picture for each building.
+ *
+ * The build screen used to be eleven paragraphs of text in a grid, which is a
+ * syllabus and not a game: nothing on it could be told apart until it had
+ * been read. Every card now leads with the structure itself, so the tree is
+ * scannable by silhouette first and by sentence second.
+ *
+ * Each sprite is chosen for what the technology actually does, not for what
+ * its name sounds like - a broker is an aerial with cables because it moves
+ * messages, a registry is a rack of parts that are not running yet, an
+ * orchestrator is an empty frame waiting to be filled.
+ *
+ * The two deliberate repeats are the point rather than an oversight. The
+ * vault is the same chest as the storage currency and the cache is the same
+ * tank as memory, because that is exactly what they are, and a player who
+ * spots it has learned something the paragraph underneath only says.
+ */
+export const BUILDING_ICONS: Record<string, string> = {
+  'power-grid': 'space/machine_generator#0',
+  'runtime-forge': 'survival/workbench-anvil#0',
+  'image-registry': 'space/barrels_rail#0',
+  'container-yard': 'survival/box-large#0',
+  orchestrator: 'space/structure_detailed#0',
+  'message-broker': 'space/machine_wirelessCable#0',
+  'data-vault': 'survival/chest#0',
+  'cache-farm': 'space/machine_barrel#0',
+  'search-spire': 'nature/statue_obelisk#0',
+  'analytics-rig': 'space/satelliteDish_large#0',
+  'observability-tower': 'towerDefense/tower-square-build-d#0',
+};
+
+/**
+ * The tinted well a building's picture sits in, plus the picture.
+ *
+ * Locked entries are drawn greyed and half transparent rather than left
+ * blank: the player is supposed to see what they are working towards, and an
+ * empty square teaches nothing.
+ */
+function buildingThumb(
+  ui: UIContext, atlas: ReturnType<typeof propAtlas>,
+  x: number, y: number, size: number, id: string, tint: number, locked: boolean,
+): void {
+  ui.shapes.roundedRect(x, y, size, size, 10, shade(tint, locked ? 0.76 : 0.58), 1, 0);
+  ui.shapes.roundedRect(x, y + size - 13, size, 13, 10, shade(tint, locked ? 0.66 : 0.42), 1, 0);
+  const art = BUILDING_ICONS[id];
+  if (!art || !atlas) return;
+  // Shadow first, so the structure stands in the well instead of floating.
+  ui.shapes.ellipse(x + size / 2, y + size - 8, size * 0.3, size * 0.09, PALETTE.uiShadow, 0.18, 0, 16);
+  atlas.drawIcon(ui.quads, art, x + size / 2, y + size / 2 - 3, size - 12, {
+    alpha: locked ? 0.5 : 1,
+    tint: locked ? 0x9aa0b0 : 0xffffff,
+  });
+}
 
 /** Numbers get long. 12400 reads worse than 12.4k in a 96 pixel pill. */
 function compact(n: number): string {
@@ -267,16 +324,28 @@ export function drawToolbar(
   const result: HudResult = { openQuests: false, openBuild: false, openCodex: false, openHelp: false };
   const label = `MISSIONS  ${quests.questsDone}/${quests.questsTotal}`;
 
-  if (button(ui, { x: 14, y, w: 168, h: 40 }, label, { color: PALETTE.warn, small: true })) {
+  // Each button leads with its own mark. That slot used to hold a tab of flat
+  // colour, which is four unexplained colours in a row and tells a new player
+  // nothing; a checklist, a hammer and a book tell them what the row is for
+  // before they read a word of it.
+  if (button(ui, { x: 14, y, w: 186, h: 40 }, label, {
+    color: PALETTE.warn, small: true, icon: GLYPHS.missions,
+  })) {
     result.openQuests = true;
   }
-  if (button(ui, { x: 190, y, w: 116, h: 40 }, 'BUILD  (B)', { color: PALETTE.typeInfra, small: true })) {
+  if (button(ui, { x: 208, y, w: 134, h: 40 }, 'BUILD  (B)', {
+    color: PALETTE.typeInfra, small: true, icon: GLYPHS.build,
+  })) {
     result.openBuild = true;
   }
-  if (button(ui, { x: 314, y, w: 116, h: 40 }, 'CODEX  (G)', { color: PALETTE.typeIntel, small: true })) {
+  if (button(ui, { x: 350, y, w: 134, h: 40 }, 'CODEX  (G)', {
+    color: PALETTE.typeIntel, small: true, icon: GLYPHS.codex,
+  })) {
     result.openCodex = true;
   }
-  if (button(ui, { x: 438, y, w: 100, h: 40 }, 'HELP  (H)', { color: PALETTE.info, small: true })) {
+  if (button(ui, { x: 492, y, w: 118, h: 40 }, 'HELP  (H)', {
+    color: PALETTE.info, small: true, icon: GLYPHS.help,
+  })) {
     result.openHelp = true;
   }
   return result;
@@ -301,23 +370,32 @@ export function drawBuildMenu(
   ui: UIContext, p: PlayerState, now: number, width: number, height: number,
 ): BuildMenuResult {
   const result: BuildMenuResult = { close: false, build: null, rush: false };
+  const atlas = propAtlas();
   ui.shapes.rect(0, 0, width, height, PALETTE.uiShadow, 0.55, 0);
 
-  // Sized to the window rather than to a fixed height: the whole tree has to
-  // fit, because the locked cards are the screen's reason for existing and a
-  // cut-off row hides exactly those.
-  const w = Math.min(1100, width - 40);
-  const h = height - 32;
+  // Sized to its contents rather than to the window. The whole tree has to
+  // fit - the locked cards are the screen's reason for existing and a cut-off
+  // row hides exactly those - but a panel stretched to the full height just
+  // pads eleven cards out with empty board.
+  const cols = 3;
+  const rows = Math.ceil(BUILDINGS.length / cols);
+  const w = Math.min(1180, width - 40);
+  const headH = 62 + (p.base.building ? 64 : 0);
+  const roomH = height - 32;
+  const cardH = Math.max(104, Math.min(152, (roomH - headH - 16) / rows - 12));
+  const h = Math.min(roomH, headH + rows * (cardH + 12) + 4);
   const x = (width - w) / 2;
-  const y = 16;
+  const y = (height - h) / 2;
   panel(ui, { x, y, w, h }, undefined, 0.985, 16);
 
+  // Glass ink, not card ink: the panel behind this heading is dark, and the
+  // title was being drawn in the colour meant for the cream cards on it.
   drawText(ui.quads, ui.fontBig ?? ui.font, 'BUILD', x + 26, y + 18, {
-    color: PALETTE.ink,
+    color: PALETTE.glassInk,
     letterSpacing: 3,
   });
   drawText(ui.quads, ui.fontSmall, 'Each structure needs the one before it. The reason is written on the card.', x + 120, y + 26, {
-    color: PALETTE.inkSoft,
+    color: PALETTE.glassInkDim,
   });
   if (button(ui, { x: x + w - 116, y: y + 14, w: 100, h: 34 }, 'CLOSE', { color: PALETTE.inkSoft, small: true })) {
     result.close = true;
@@ -330,9 +408,12 @@ export function drawBuildMenu(
     const prog = buildProgress(p.base, now);
     const remain = Math.max(0, Math.ceil((p.base.building.doneAt - now) / 1000));
     ui.shapes.roundedRect(x + 20, listTop, w - 40, 52, 10, shade(spec.tint, 0.7), 1, 0);
-    drawText(ui.quads, ui.font, `BUILDING  ${spec.name}`, x + 36, listTop + 10, { color: PALETTE.ink, letterSpacing: 1 });
-    ui.shapes.roundedRect(x + 36, listTop + 32, w - 220, 8, 4, PALETTE.uiShadow, 0.2, 0);
-    ui.shapes.roundedRect(x + 36, listTop + 32, (w - 220) * prog, 8, 4, spec.tint, 1, 0);
+    // The thing being built, so the strip says what is rising without being read.
+    const inProgressArt = BUILDING_ICONS[spec.id];
+    if (inProgressArt && atlas) atlas.drawIcon(ui.quads, inProgressArt, x + 46, listTop + 26, 40);
+    drawText(ui.quads, ui.font, `BUILDING  ${spec.name}`, x + 72, listTop + 10, { color: PALETTE.ink, letterSpacing: 1 });
+    ui.shapes.roundedRect(x + 72, listTop + 32, w - 256, 8, 4, PALETTE.uiShadow, 0.2, 0);
+    ui.shapes.roundedRect(x + 72, listTop + 32, (w - 256) * prog, 8, 4, spec.tint, 1, 0);
     drawText(ui.quads, ui.fontSmall, `${remain}s left`, x + w - 170, listTop + 32, { color: PALETTE.inkSoft });
     if (button(ui, { x: x + w - 116, y: listTop + 9, w: 96, h: 34 }, `RUSH ${rushCost(p.base, now)}`, {
       color: PALETTE.warn, small: true, disabled: p.resources.scrap < rushCost(p.base, now),
@@ -346,9 +427,9 @@ export function drawBuildMenu(
   // have to scroll hides exactly the locked entries whose reasons are the
   // point of the screen.
   const menu = new Map(buildMenu(p, p.base).map((e) => [e.id, e] as const));
-  const cols = 3;
   const cardW = (w - 40 - (cols - 1) * 12) / cols;
-  const cardH = Math.max(96, Math.min(118, (h - 80) / 4 - 12));
+  /** The picture square at the head of every card. */
+  const thumb = Math.max(40, Math.min(64, Math.round(cardH * 0.38)));
   for (let i = 0; i < BUILDINGS.length; i++) {
     const spec = BUILDINGS[i]!;
     const entry = menu.get(spec.id)!;
@@ -370,28 +451,38 @@ export function drawBuildMenu(
       ui.shapes.roundedRect(rect.x, rect.y, rect.w, rect.h, 10, spec.tint, 0.12, 0);
     }
 
-    drawText(ui.quads, ui.font, spec.name, rect.x + 18, rect.y + 10, {
+    // Picture, then a two-line header beside it, then the prose across the
+    // full width underneath. The BUILD button rides up into the header rather
+    // than sitting in the corner, because the sentence explaining the gate is
+    // the longest thing on the card and it needs the whole bottom.
+    buildingThumb(ui, atlas, rect.x + 14, rect.y + 12, thumb, spec.id, spec.tint, entry.state === 'locked');
+    const textX = rect.x + 14 + thumb + 12;
+    drawText(ui.quads, ui.font, spec.name, textX, rect.y + 14, {
       color: entry.state === 'locked' ? PALETTE.inkSoft : PALETTE.ink,
       letterSpacing: 1,
     });
+    const bodyY = rect.y + 12 + thumb + 12;
+    const bodyW = rect.w - 30;
 
     if (entry.state === 'built') {
-      tagRight(ui, rect.x + rect.w - 14, rect.y + 12, 'BUILT', PALETTE.good, true);
-      paragraph(ui, rect.x + 18, rect.y + 34, rect.w - 34, spec.description, PALETTE.inkSoft, 0.92);
+      tagRight(ui, rect.x + rect.w - 14, rect.y + 40, 'BUILT', PALETTE.good, true);
+      paragraph(ui, rect.x + 15, bodyY, bodyW, spec.description, PALETTE.inkSoft, 0.92);
     } else if (entry.state === 'locked') {
       const needs = entry.missingRequires.map((r) => getBuilding(r).name).join(' + ');
-      tagRight(ui, rect.x + rect.w - 14, rect.y + 30, `NEEDS ${needs}`, PALETTE.warn);
-      paragraph(ui, rect.x + 18, rect.y + 52, rect.w - 34, spec.whyGated, PALETTE.inkSoft, 0.9);
+      tagRight(ui, rect.x + rect.w - 14, rect.y + 40, `NEEDS ${needs}`, PALETTE.warn);
+      paragraph(ui, rect.x + 15, bodyY, bodyW, spec.whyGated, PALETTE.inkSoft, 0.9);
     } else {
-      // Cost chips, with the ones you cannot afford in red.
-      let tx = rect.x + 18;
+      // Cost chips, with the ones you cannot afford in red. They sit under
+      // the thumbnail rather than beside the name: three of them are wider
+      // than the gap the BUILD button leaves in the header row.
+      let tx = rect.x + 15;
       for (const [k, v] of Object.entries(spec.cost) as Array<[ResourceId, number]>) {
         const short = (entry.missing[k] ?? 0) > 0;
-        tx += tag(ui, tx, rect.y + 34, `${RESOURCES[k].label} ${v}`, short ? PALETTE.danger : RESOURCE_COLORS[k]) + 5;
+        tx += tag(ui, tx, bodyY, `${RESOURCES[k].label} ${v}`, short ? PALETTE.danger : RESOURCE_COLORS[k]) + 5;
       }
-      paragraph(ui, rect.x + 18, rect.y + 56, rect.w - 34, spec.description, PALETTE.inkSoft, 0.9);
+      paragraph(ui, rect.x + 15, bodyY + 24, bodyW, spec.description, PALETTE.inkSoft, 0.9);
       const canBuild = entry.state === 'available' && !p.base.building;
-      if (button(ui, { x: rect.x + rect.w - 100, y: rect.y + rect.h - 40, w: 86, h: 30 }, 'BUILD', {
+      if (button(ui, { x: rect.x + rect.w - 100, y: rect.y + 12, w: 86, h: 30 }, 'BUILD', {
         color: spec.tint, small: true, disabled: !canBuild,
       })) {
         result.build = spec.id;
@@ -433,6 +524,7 @@ export function drawPlantMenu(
     color: PALETTE.glassInkDim,
   });
   if (button(ui, { x: x + w - 104, y: y - 46, w: 88, h: 30 }, 'CANCEL', { color: PALETTE.inkSoft, small: true })) {
+    playSfx('back', 0.6);
     result.close = true;
   }
 
@@ -472,7 +564,13 @@ export function drawPlantMenu(
     });
     paragraph(ui, rect.x + 14, ty + 20, rect.w - 28, crop.description, PALETTE.inkSoft, 0.88);
 
-    if (over && afford && ui.input.clicked) result.crop = crop.id;
+    if (over && ui.input.clicked) {
+      // Sounds first: the refusal is the only feedback a player who cannot
+      // afford a seed gets, and it has to fire on the click they actually
+      // made rather than being swallowed with it.
+      playSfx(afford ? 'place' : 'deny', afford ? 0.75 : 0.5);
+      if (afford) result.crop = crop.id;
+    }
   }
   return result;
 }
@@ -482,16 +580,6 @@ export function drawPlantMenu(
 /** The rules of the game on one screen. Returns true when it should close. */
 export function drawHelp(ui: UIContext, width: number, height: number): boolean {
   ui.shapes.rect(0, 0, width, height, PALETTE.uiShadow, 0.66, 0);
-  const w = Math.min(880, width - 60);
-  const h = Math.min(560, height - 60);
-  const x = (width - w) / 2;
-  const y = (height - h) / 2;
-  panel(ui, { x, y, w, h }, undefined, 0.985, 16);
-
-  drawText(ui.quads, ui.fontBig ?? ui.font, 'HOW THIS GAME WORKS', x + 28, y + 20, {
-    color: PALETTE.ink,
-    letterSpacing: 2.5,
-  });
 
   const sections: Array<[string, string]> = [
     [
@@ -505,6 +593,14 @@ export function drawHelp(ui: UIContext, width: number, height: number): boolean 
       'Catch technologies on the island. Farm the four resources. Build the tech tree, where ' +
         'every structure needs the one before it for a real architectural reason. Fight incidents ' +
         'to earn scrap and experience, then spend both on going further.',
+    ],
+    [
+      'WHERE SCRAP COMES FROM',
+      'Scrap is the only thing the island does not grow. Plots produce compute, memory, ' +
+        'bandwidth and storage - never scrap - so farming will not refill it. Clearing an ' +
+        'incident at the Ops Centre pays scrap every single time, not just the first, and ' +
+        'even losing pays a fraction of it. Missions pay the rest. If you are out, go and ' +
+        'fight something: it is the tap, and capturing, seeding and building are the drains.',
     ],
     [
       'THE PIPELINE',
@@ -526,11 +622,31 @@ export function drawHelp(ui: UIContext, width: number, height: number): boolean 
     ],
   ];
 
+  // Measured before the panel is drawn, not after. Sizing this to the window
+  // left a third of it empty under the last line, and the text is the only
+  // thing on the screen - there is nothing else for the extra height to hold.
+  const w = Math.min(880, width - 60);
+  const lh = ui.fontSmall.lineHeight * 0.98;
+  let body = 0;
+  for (const [, text] of sections) body += 22 + ui.fontSmall.wrap(text, w - 56, 0.98).length * lh + 14;
+  const h = Math.min(height - 60, 62 + body + 66);
+  const x = (width - w) / 2;
+  const y = (height - h) / 2;
+  panel(ui, { x, y, w, h }, undefined, 0.985, 16);
+
+  // Glass ink. This whole screen was being drawn in the dark ink meant for
+  // the cream cards, on a dark glass panel - the one page that explains where
+  // everything comes from was the least readable thing in the game.
+  drawText(ui.quads, ui.fontBig ?? ui.font, 'HOW THIS GAME WORKS', x + 28, y + 20, {
+    color: PALETTE.glassInk,
+    letterSpacing: 2.5,
+  });
+
   let sy = y + 62;
-  for (const [title, body] of sections) {
+  for (const [title, text] of sections) {
     drawText(ui.quads, ui.font, title, x + 28, sy, { color: PALETTE.info, letterSpacing: 1.6 });
     sy += 22;
-    sy += paragraph(ui, x + 28, sy, w - 56, body, PALETTE.ink, 0.98);
+    sy += paragraph(ui, x + 28, sy, w - 56, text, PALETTE.glassInk, 0.98);
     sy += 14;
   }
 
